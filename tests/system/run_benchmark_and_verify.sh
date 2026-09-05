@@ -298,9 +298,8 @@ output=$(python -m benchmarks.open_one_rec.one_rec_acc_test \
   --num-prompts 100 \
   --max-concurrency 1 \
   --use-beam-search \
-  --backend openai-chat \
   --task-type video \
-  --endpoint /v1/chat/completions \
+  --endpoint /v1/completions \
   --port "$run_port" \
   --n "$beam_width")
 online_accuracy_status=$?

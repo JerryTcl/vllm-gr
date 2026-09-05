@@ -186,7 +186,7 @@ def test_cuda_sliced_logits_keep_global_table_token_ids(dtype: torch.dtype) -> N
     )
     reference_inputs = list(inputs)
     reference_inputs[0] = full_logits
-    expected_tokens, expected_logprobs = rec_constrained_topk_torch(
+    expected_tokens, _ = rec_constrained_topk_torch(
         *reference_inputs,
         current_step=1,
         top_k=2,
@@ -195,6 +195,10 @@ def test_cuda_sliced_logits_keep_global_table_token_ids(dtype: torch.dtype) -> N
     )
 
     assert torch.equal(actual_tokens, expected_tokens.to(torch.int32))
+    divisors = torch.tensor([1.0, 2.0], device="cuda")[:, None]
+    slice_logprobs = torch.log_softmax(inputs[0].float() / divisors, dim=1)
+    expected_logprobs = slice_logprobs.gather(1, actual_tokens.long() - 1)
+    expected_logprobs.masked_fill_(~valid_mask, -1.0e20)
     torch.testing.assert_close(actual_logprobs, expected_logprobs, rtol=2e-3, atol=2e-3)
     assert valid_counts.cpu().tolist() == [2, 1]
     expected_mask = torch.tensor([[True, True], [True, False]], device="cuda")
@@ -219,7 +223,9 @@ def test_cuda_sliced_logits_exclude_table_tokens_outside_window() -> None:
     assert tokens[:, 0].cpu().tolist() == [3, 3]
     assert valid_counts.cpu().tolist() == [1, 1]
     assert torch.equal(valid_mask, torch.tensor([[True, False], [True, False]], device="cuda"))
-    torch.testing.assert_close(logprobs[:, 0], torch.zeros(2, device="cuda"), rtol=0, atol=0)
+    divisors = torch.tensor([1.0, 2.0], device="cuda")[:, None]
+    expected = torch.log_softmax(inputs[0].float() / divisors, dim=1)[:, 1]
+    torch.testing.assert_close(logprobs[:, 0], expected, rtol=2e-3, atol=2e-3)
 
 
 @pytest.mark.parametrize("step", [0, 1, 2])

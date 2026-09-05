@@ -12,6 +12,7 @@ from vllm.lora.request import LoRARequest
 
 from vllm_gr.beam_search_decision_utils import (
     complete_eos_candidates,
+    extract_and_dedup_flat_logprobs,
     extract_and_dedup_segment,
     extract_constrained_flat_logprobs,
     extract_constrained_segment,
@@ -230,6 +231,31 @@ def test_extract_constrained_flat_logprobs_prefill_wide_segment() -> None:
     assert decoded == [None, None, None]
 
 
+@pytest.mark.parametrize(
+    "extract_fn",
+    [extract_and_dedup_flat_logprobs, extract_constrained_flat_logprobs],
+)
+def test_extract_flat_logprobs_empty_output_returns_no_candidates(extract_fn) -> None:
+    # An aborted / mid-shutdown output can carry ``logprobs is not None`` with
+    # no transported candidate block; extraction must degrade to "no
+    # candidates", never raise IndexError.
+    flat = SimpleNamespace(
+        token_ids=[],
+        logprobs=[],
+        ranks=None,
+        decoded_tokens=None,
+        start_indices=[],
+        end_indices=[],
+    )
+
+    token_ids, logprobs, ranks, decoded = extract_fn(flat, 5)
+
+    assert token_ids == []
+    assert logprobs == []
+    assert ranks is None
+    assert decoded is None
+
+
 def test_mask_candidate_logprobs_keeps_candidate_geometry() -> None:
     result = mask_candidate_logprobs(
         [7, 3, 5, 9],
@@ -362,3 +388,33 @@ def test_materialize_selected_beams_uses_explicit_nonuniform_parent_mapping() ->
     assert [beam._lp_parent for beam in new_beams] == [parents[2], parents[0]]
     assert [beam._lp_step_data for beam in new_beams] == [cache[2], cache[0]]
     assert fork_info == [(2, 32), (0, 11)]
+
+
+def test_refill_eos_masked_slots_pads_with_row_best_finite() -> None:
+    from vllm_gr.beam_search_decision_utils import refill_eos_masked_slots
+
+    scores = np.array(
+        [
+            [-0.1, -np.inf, -0.3, -0.4],
+            [-0.5, -np.inf, -np.inf, -np.inf],
+        ]
+    )
+    refilled = refill_eos_masked_slots(scores, has_eos_completions=True)
+
+    # Row 0: the masked slot is refilled with the row's best finite score.
+    assert refilled[0, 1] == pytest.approx(-0.1)
+    assert refilled[0, 0] == pytest.approx(-0.1)
+    # Row 1: only one finite candidate exists, all masked slots duplicate it.
+    assert refilled[1, 0] == pytest.approx(-0.5)
+    assert not np.isinf(refilled).any()
+
+
+def test_refill_eos_masked_slots_noop_without_eos_completions() -> None:
+    from vllm_gr.beam_search_decision_utils import refill_eos_masked_slots
+
+    scores = np.array([[-0.1, -np.inf]])
+    refilled = refill_eos_masked_slots(scores, has_eos_completions=False)
+
+    # Catalog "-inf" slots are managed by the catalog strategy; without EOS
+    # completions the refill must leave the scores untouched.
+    assert refilled is scores

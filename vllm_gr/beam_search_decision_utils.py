@@ -98,6 +98,11 @@ def extract_and_dedup_flat_logprobs(flat: Any, logprobs_num: int):
     duplicate is position 0 (sampled token) when it also appears in the
     top-K (positions 1..K).  Returns exactly ``logprobs_num`` entries.
     """
+    if not flat.start_indices:
+        # Aborted / empty output: no candidate block was transported, so
+        # there is nothing to extract (an IndexError here used to 500 the
+        # whole beam request).
+        return [], [], None, None
     return extract_and_dedup_segment(
         flat.token_ids,
         flat.logprobs,
@@ -172,6 +177,9 @@ def extract_constrained_flat_logprobs(flat: Any, logprobs_num: int):
     The constrained prefill produces a single wide flat segment (W valid
     candidates followed by padding); no sampled-token dedup applies.
     """
+    if not flat.start_indices:
+        # Aborted / empty output: no candidate block was transported.
+        return [], [], None, None
     return extract_constrained_segment(
         flat.token_ids,
         flat.logprobs,
@@ -227,6 +235,24 @@ def complete_eos_candidates(
     masked_scores = scores.copy()
     masked_scores[eos_indices] = -np.inf
     return eos_beams, masked_scores
+
+
+def refill_eos_masked_slots(scores: np.ndarray, has_eos_completions: bool) -> np.ndarray:
+    """Refill EOS-masked -inf slots with the row's best finite score.
+
+    ``complete_eos_candidates`` masks completed EOS candidates to -inf.  In a
+    fixed-width candidate matrix (the row holds exactly ``beam_width``
+    candidates) the masked slot would otherwise be selected as a zombie beam
+    and displace a real candidate; duplicating the row's best finite candidate
+    keeps the width contract without affecting the ranking of genuine
+    candidates.  A row whose candidates are all masked cannot continue — the
+    -inf survives there and ranks last by construction.
+    """
+    if not has_eos_completions or not np.isinf(scores).any():
+        return scores
+    finite = np.where(np.isfinite(scores), scores, -np.inf)
+    best_per_row = finite.max(axis=1, keepdims=True)
+    return np.where(np.isinf(scores), best_per_row, scores)
 
 
 def select_top_indices(

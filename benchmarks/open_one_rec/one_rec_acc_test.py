@@ -105,17 +105,25 @@ def run_api_inference(
     # Map generation config to API parameters
     api_params = {
         "model": model,
-        "use_beam_search": True if (gen_config.get("num_beams", 1) > 1) else False,
+        "use_beam_search": gen_config.get("num_beams", 1) > 1,
         "max_tokens": gen_config.get("max_new_tokens", 1024),
         "temperature": gen_config.get("temperature", 0.0),
         "top_p": gen_config.get("top_p", 1.0),
         "n": gen_config.get("num_return_sequences", 1),
         "vllm_xargs": {"begin_token": "<|sid_begin|>", "end_token": "<|sid_end|>"},
     }
+    # DataLoaderWrapper has already rendered each prompt with the model's
+    # chat template.  The Completion API accepts that rendered text verbatim;
+    # sending it as the content of a new Chat message would apply the template
+    # a second time and change the model input.
+    completion_endpoint = api_url.rstrip("/").endswith("/v1/completions")
 
     def _send_request(prompt):
         response = None
-        payload = {"messages": [{"role": "user", "content": prompt}], **api_params}
+        if completion_endpoint:
+            payload = {"prompt": prompt, **api_params}
+        else:
+            payload = {"messages": [{"role": "user", "content": prompt}], **api_params}
         try:
             response = requests.post(api_url, headers=headers, json=payload)
             response.raise_for_status()
@@ -125,19 +133,24 @@ def run_api_inference(
             if data.get("choices"):
                 mock_outputs = []
                 for choice in data["choices"]:
-                    message = choice.get("message", {})
-                    content = message.get("content", "")
-                    reasoning = message.get("reasoning_content", "")  # Support for reasoning models
+                    if completion_endpoint:
+                        full_text = str(choice.get("text", ""))
+                    else:
+                        message = choice.get("message", {})
+                        content = message.get("content", "")
+                        reasoning = message.get(
+                            "reasoning_content", ""
+                        )  # Support for reasoning models
 
-                    full_text = ""
-                    if reasoning:
-                        full_text += reasoning
-                    if content:
-                        full_text += content
+                        full_text = ""
+                        if reasoning:
+                            full_text += reasoning
+                        if content:
+                            full_text += content
                     mock_outputs.append(MockCompletionOutput(full_text))
                 return MockRequestOutput(prompt, mock_outputs)
             return MockRequestOutput(prompt, [MockCompletionOutput("")])
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - record per-sample failures, keep the run going
             status_code = response.status_code if response is not None else "N/A"
             response_text = response.text if response is not None else "N/A"
             logger.error(f"Request failed. Status code: {status_code}")
@@ -276,7 +289,7 @@ def main():
                 },
                 gpu_memory_utilization=0.7,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - report any init failure and exit cleanly
             logger.error(f"Failed to initialize vLLM: {e}")
             sys.exit(1)
 
@@ -333,7 +346,13 @@ def main():
         prompts_dict = [{"prompt": prompt} for prompt in prompts]
         gen_start = time.perf_counter()
         raw_offline_outputs = llm.beam_search(
-            prompts_dict, params, concurrency_limit=args.max_concurrency
+            prompts_dict,
+            params,
+            concurrency_limit=args.max_concurrency,
+            # The evaluator matches SID token ids; decoding the (long)
+            # recommendation-history prompt into text only burns CPU while
+            # the GPU sits idle.
+            decode_prompt_in_text=False,
         )
         assert len(raw_offline_outputs) == len(prompts)
         gen_end = time.perf_counter()
@@ -344,12 +363,12 @@ def main():
             # beam_search returns BeamSearchOutput with .outputs containing BeamSearchSequence objects
             # Each BeamSearchSequence has .text attribute
             mock_completions = []
-            prompt_len = len(prompts[i])
             if hasattr(raw_output, "sequences"):
                 for beam_seq in raw_output.sequences:
-                    text = (
-                        beam_seq.text[prompt_len:] if hasattr(beam_seq, "text") else str(beam_seq)
-                    )
+                    # beam_search runs with decode_prompt_in_text=False, so
+                    # BeamSearchSequence.text already carries the generated
+                    # tail only — no prompt prefix to strip here.
+                    text = beam_seq.text if hasattr(beam_seq, "text") else str(beam_seq)
                     logprobs = getattr(beam_seq, "cum_logprob", None)
                     mock_completions.append(MockCompletionOutput(text, logprobs))
             else:
@@ -406,7 +425,7 @@ def main():
         predictions_dir=args.result_dir,
         debug=args.debug,
     )
-    metrics, per_sample_metrics = evaluator.evaluate()
+    metrics, _ = evaluator.evaluate()
     metrics["elapsed_time"] = gen_end - gen_start
 
     print(f"\n--- Evaluation Results for {args.task_type} on model {args.model} ---")

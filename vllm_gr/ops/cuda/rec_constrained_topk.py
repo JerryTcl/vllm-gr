@@ -8,11 +8,12 @@ import torch
 import triton
 import triton.language as tl
 
+from vllm_gr.constraints.scoring import INVALID_LOGIT, score_selected_tokens
+
 # Triton JIT functions intentionally use its untyped DSL values.
 # mypy: disable-error-code="misc,no-untyped-def"
 
 
-INVALID_LOGIT = -1.0e20
 MAX_TOP_K = 256
 MAX_SORT_BLOCK = 65536
 
@@ -484,6 +485,29 @@ def _launch_rec_constrained_topk_cuda_out(
         BLOCK=block,
         num_warps=8 if block >= 2048 else 4,
     )
+    normalized = score_selected_tokens(
+        logits,
+        out_token_ids,
+        out_valid_mask,
+        temperatures,
+        vocab_offset=vocab_offset,
+        invalid_logprob=INVALID_LOGIT,
+    )
+    out_logprobs.copy_(normalized)
+    if out_wire_logprobs is not None:
+        out_wire_logprobs.copy_(normalized.masked_fill(~out_valid_mask, float("-inf")))
+    if out_prefill_status is not None and out_prefill_payload is not None:
+        # The fused kernel already packed token IDs, parent zeros, and status.
+        # Refresh only the score-bit segment after common-domain rescoring.
+        active_count = rows * top_k
+        wire_scores = (
+            out_wire_logprobs
+            if out_wire_logprobs is not None
+            else normalized.masked_fill(~out_valid_mask, float("-inf"))
+        )
+        out_prefill_payload[2 * active_count : 3 * active_count].copy_(
+            wire_scores.reshape(-1).view(torch.int32)
+        )
     return out_token_ids, out_logprobs, out_valid_mask, out_valid_counts
 
 

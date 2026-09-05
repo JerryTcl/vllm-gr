@@ -41,6 +41,7 @@ from vllm_gr.beam_search_decision_utils import (
     extract_constrained_flat_logprobs,
     extract_constrained_segment,
     materialize_selected_beams,
+    refill_eos_masked_slots,
     select_top_indices,
 )
 from vllm_gr.config import ConstraintBackend, GRConfig
@@ -55,6 +56,7 @@ from vllm_gr.constraints.startup import install_constraint_table
 from vllm_gr.constraints.strategies import (
     ConstraintTableStrategy,
     TrieConstraintStrategy,
+    validate_beam_request_prefix_cache,
     validate_constraint_generation_limits,
     validate_constraint_table_protocol,
 )
@@ -68,7 +70,6 @@ from vllm_gr.utils.npu_adapter import release_accelerator_memory
 from vllm_gr.v1.engine.types import BeamRequestStepUpdate
 
 if TYPE_CHECKING:
-    from vllm.entrypoints.generate.beam_search.utils import BeamSearchOutput
     from vllm.inputs import TextPrompt, TokensPrompt
     from vllm.lora.request import LoRARequest
     from vllm.sampling_params import BeamSearchParams
@@ -100,7 +101,7 @@ def _beam_request_cleanup(llm_engine, session_id: str, final_ids: list[str]) -> 
                 sampling_params=SamplingParams(),
             )
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - best-effort cleanup must never raise
         logger.error("Failed to clear beam_request cache for session %s: %s", session_id, e)
 
 
@@ -186,6 +187,12 @@ def _prepare_beam_step_requests(
             for new_idx, (parent_beam_idx, tok) in enumerate(fork_info_j):
                 parent_beam_indices.append(parent_beam_idx)
 
+            parent_cumulative_logprobs = (
+                [float(beam.cum_logprob) for beam in instance.beams]
+                if all(hasattr(beam, "cum_logprob") for beam in instance.beams)
+                else None
+            )
+
             update = BeamRequestStepUpdate(
                 session_id=session_id,
                 parent_beam_ids=parent_beam_ids,
@@ -200,6 +207,7 @@ def _prepare_beam_step_requests(
                 else tokenizer.eos_token_id,
                 lora_request=instance.beams[0].lora_request,
                 parent_beam_indices=parent_beam_indices,
+                parent_cumulative_logprobs=parent_cumulative_logprobs,
                 max_decode_steps=max_decode_steps,
                 # Constraint Tables: the Worker's raw-logits hook needs the
                 # step to run (1/2 for decode; 0 reserved for the prefill).
@@ -599,6 +607,10 @@ def _custom_beam_search_batch(
                     inherit_lora_request=True,
                 )
                 instance.completed.extend(eos_beams)
+                # EOS-masked slots must not become zombie beams: refill them
+                # with the row's best finite score before the fixed-width
+                # selection picks them up.
+                all_beams_logprob = refill_eos_masked_slots(all_beams_logprob, bool(eos_beams))
 
             # A worker decision already contains exactly W survivors in the
             # order used by its device-resident KV state. Keep that order.
@@ -801,6 +813,7 @@ class GRLLM(LLM):
         lora_request: Union[list["LoRARequest"], "LoRARequest", None] = None,
         use_tqdm: bool = False,
         concurrency_limit: int | None = None,
+        decode_prompt_in_text: bool = True,
     ) -> list["BeamSearchOutput"]:
         """
         Generate sequences using beam search.
@@ -813,6 +826,10 @@ class GRLLM(LLM):
             use_tqdm: Whether to use tqdm to display the progress bar.
             concurrency_limit: The maximum number of concurrent requests.
                 If None, the number of concurrent requests is unlimited.
+            decode_prompt_in_text: When False, skip decoding the prompt and
+                emit ``BeamSearchSequence.text`` as the generated tail only.
+                Long-prompt workloads pay an O(prompt_len) CPU detokenization
+                per sample otherwise, which starves the GPU.
         """
         # Lazy imports for beam search dependencies
         import itertools
@@ -913,11 +930,15 @@ class GRLLM(LLM):
             )
             instances.append(instance)
 
-        # Cache decoded prompt text and token length for each instance to optimize final decoding
+        # Cache decoded prompt text and token length for each instance to optimize final decoding.
+        # With decode_prompt_in_text=False the prompt is never decoded and
+        # beam.text carries only the generated tail — long-prompt workloads
+        # become GPU-bound instead of paying an O(prompt_len) CPU
+        # detokenization per sample.
         cached_prompts = []
         for instance in instances:
             prompt_tokens = instance.beams[0].tokens
-            prompt_text = tokenizer.decode(prompt_tokens)
+            prompt_text = tokenizer.decode(prompt_tokens) if decode_prompt_in_text else None
             cached_prompts.append({"text": prompt_text, "len": len(prompt_tokens)})
 
         pre_calc = 0 if sid_begin_token_id is None else 1
@@ -956,6 +977,11 @@ class GRLLM(LLM):
             self.constraint_coordinator.strategy, TrieConstraintStrategy
         ):
             use_custom_attn = False
+        cache_config = getattr(vllm_config, "cache_config", None)
+        validate_beam_request_prefix_cache(
+            beam_request_active=use_custom_attn,
+            prefix_caching_enabled=getattr(cache_config, "enable_prefix_caching", None),
+        )
         # Constraint Tables run in the Worker raw-logits hook, which is only
         # installed on the CUSTOM-attention beam-request path.  The baseline
         # generate() loop below cannot express constraint_step + beam_suffix,
@@ -998,12 +1024,14 @@ class GRLLM(LLM):
             else:
                 for _ in token_iter:
                     all_beams: list[BeamSearchSequence] = list(
-                        sum((instance.beams for instance in instances_batch), [])
+                        itertools.chain.from_iterable(
+                            instance.beams for instance in instances_batch
+                        )
                     )
                     pos = [0] + list(
                         itertools.accumulate(len(instance.beams) for instance in instances_batch)
                     )
-                    instance_start_and_end: list[tuple[int, int]] = list(zip(pos[:-1], pos[1:]))
+                    instance_start_and_end: list[tuple[int, int]] = list(itertools.pairwise(pos))
 
                     if len(all_beams) == 0:
                         break
@@ -1153,7 +1181,9 @@ class GRLLM(LLM):
             else:
                 decoded_gen_texts = [tokenizer.decode(tokens) for tokens in beam_token_lists]
             for beam, gen_text in zip(best_beams, decoded_gen_texts):
-                beam.text = prompt_text + gen_text
+                # decode_prompt_in_text=False leaves prompt_text as None and
+                # keeps beam.text as the generated tail only.
+                beam.text = gen_text if prompt_text is None else prompt_text + gen_text
             outputs.append(BeamSearchOutput(sequences=best_beams))
 
         return outputs

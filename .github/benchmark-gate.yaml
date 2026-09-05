@@ -2,6 +2,9 @@ version: 2
 name: development
 
 thresholds:
+  # Absolute Video-100 smoke floors. These are not the official accuracy
+  # oracle; the five-task decode_graph gate uses its own versioned constrained
+  # golden. The paired native-vLLM run is retained as a diagnostic reference.
   accuracy:
     pass_at_1_min: 0.09
     pass_at_32_min: 0.29

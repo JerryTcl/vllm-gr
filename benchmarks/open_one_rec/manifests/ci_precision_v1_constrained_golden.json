@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "description": "Blocking five-task Constraint Tables golden captured after shared-domain beam-score normalization was fixed.",
+  "captured_utc": "2026-09-06",
+  "policy": {
+    "comparison": "candidate_greater_than_or_equal",
+    "blocking_metrics": [
+      "pass@1",
+      "pass@32",
+      "recall@32",
+      "pid_pass@1",
+      "pid_pass@32",
+      "pid_recall@32"
+    ],
+    "diagnostic_metrics": [
+      "position1_pass@1",
+      "position1_pass@32",
+      "recall@1",
+      "pid_position1_pass@1",
+      "pid_position1_pass@32",
+      "pid_recall@1"
+    ]
+  },
+  "protocol": {
+    "format_version": 1,
+    "model": "OpenOneRec/OneRec-1.7B",
+    "revision": "cc4d0b5b7294ecf75e40be1c77fa6b7d284bb84b",
+    "beam_width": 32,
+    "temperature": 0.0,
+    "evaluation_mode": "both",
+    "execution": "online",
+    "execution_variant": "graph-worker",
+    "seed": 123,
+    "selected_samples": 100,
+    "sample_manifest_sha256": "65fb8b240f72dea0391edd325d47acd138367bfae9198f5c56c889112b1c369c",
+    "prepared_manifest_sha256": "9e4ffa719ab99f58a53598c6d5970921f1c83ca86695f013fdbd55d39b3aaa02"
+  },
+  "tasks": {
+    "video": {
+      "source_sha256": "66079915e3c3daab7df3487f9babb658df99ec1672c3ef42d7893d87cef2e6d8",
+      "constraint": {
+        "mode": "triples",
+        "domain": "video",
+        "digest": "fba93a0f741cf11247a831dfbf6c20e0e4b33b765481da17d46cd72b48a5c6be"
+      },
+      "metrics": {
+        "pass@1": 0.1,
+        "pass@32": 0.21,
+        "position1_pass@1": 0.02,
+        "position1_pass@32": 0.08,
+        "recall@1": 0.011388888888888891,
+        "recall@32": 0.03022222222222223,
+        "pid_pass@1": 0.1,
+        "pid_pass@32": 0.21,
+        "pid_position1_pass@1": 0.02,
+        "pid_position1_pass@32": 0.08,
+        "pid_recall@1": 0.011388888888888891,
+        "pid_recall@32": 0.03022222222222223
+      }
+    },
+    "ad": {
+      "source_sha256": "d671fb497eb5495d05705688980db57a7bf5640eb7c18b9ab0cc89c76193e6c8",
+      "constraint": {
+        "mode": "triples",
+        "domain": "video",
+        "digest": "fba93a0f741cf11247a831dfbf6c20e0e4b33b765481da17d46cd72b48a5c6be"
+      },
+      "metrics": {
+        "pass@1": 0.02,
+        "pass@32": 0.27,
+        "position1_pass@1": 0.01,
+        "position1_pass@32": 0.07,
+        "recall@1": 0.004166666666666667,
+        "recall@32": 0.08614682539682539,
+        "pid_pass@1": 0.0,
+        "pid_pass@32": 0.25,
+        "pid_position1_pass@1": 0.0,
+        "pid_position1_pass@32": 0.06,
+        "pid_recall@1": 0.0,
+        "pid_recall@32": 0.0818015873015873
+      }
+    },
+    "product": {
+      "source_sha256": "355dd1807995a62af6bd33fe28eefbe9b267e836b4a76f081d8e92eb3996d5bb",
+      "constraint": {
+        "mode": "triples",
+        "domain": "product",
+        "digest": "a401a749b6d3737dae97a61dffce5011f033ed35fcf3367ae6f759158b10a44d"
+      },
+      "metrics": {
+        "pass@1": 0.04,
+        "pass@32": 0.22,
+        "position1_pass@1": 0.0,
+        "position1_pass@32": 0.08,
+        "recall@1": 0.0060952380952380945,
+        "recall@32": 0.06590873015873017,
+        "pid_pass@1": 0.01,
+        "pid_pass@32": 0.1,
+        "pid_position1_pass@1": 0.0,
+        "pid_position1_pass@32": 0.04,
+        "pid_recall@1": 0.001,
+        "pid_recall@32": 0.03229761904761905
+      }
+    },
+    "label_cond": {
+      "source_sha256": "b339ea60a1acfae625822b1e865dde170cd65ad75d9cd770838b625323373c8f",
+      "constraint": {
+        "mode": "triples",
+        "domain": "video",
+        "digest": "fba93a0f741cf11247a831dfbf6c20e0e4b33b765481da17d46cd72b48a5c6be"
+      },
+      "metrics": {
+        "pass@1": 0.03,
+        "pass@32": 0.09,
+        "position1_pass@1": 0.03,
+        "position1_pass@32": 0.04,
+        "recall@1": 0.025,
+        "recall@32": 0.04441666666666667,
+        "pid_pass@1": 0.03,
+        "pid_pass@32": 0.08,
+        "pid_position1_pass@1": 0.03,
+        "pid_position1_pass@32": 0.04,
+        "pid_recall@1": 0.025,
+        "pid_recall@32": 0.041916666666666665
+      }
+    },
+    "interactive": {
+      "source_sha256": "1ebcd2a20fa54430daba3600df2fe9bd2ddbbbcbe38601ca81211a78eed16a25",
+      "constraint": {
+        "mode": "triples",
+        "domain": "video",
+        "digest": "fba93a0f741cf11247a831dfbf6c20e0e4b33b765481da17d46cd72b48a5c6be"
+      },
+      "metrics": {
+        "pass@1": 0.04,
+        "pass@32": 0.28,
+        "position1_pass@1": 0.03,
+        "position1_pass@32": 0.14,
+        "recall@1": 0.025333333333333333,
+        "recall@32": 0.1434404761904762,
+        "pid_pass@1": 0.03,
+        "pid_pass@32": 0.26,
+        "pid_position1_pass@1": 0.02,
+        "pid_position1_pass@32": 0.12,
+        "pid_recall@1": 0.015333333333333332,
+        "pid_recall@32": 0.13135714285714287
+      }
+    }
+  }
+}

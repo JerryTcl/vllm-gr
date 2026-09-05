@@ -22,6 +22,7 @@ from vllm_gr.beam_search_decision_utils import (
     extract_constrained_flat_logprobs,
     extract_constrained_segment,
     materialize_selected_beams,
+    refill_eos_masked_slots,
     select_top_indices,
 )
 from vllm_gr.config import MAX_BEAM_WIDTH
@@ -30,6 +31,7 @@ from vllm_gr.constraints.models import CandidateLayout
 from vllm_gr.constraints.strategies import (
     ConstraintTableStrategy,
     TrieConstraintStrategy,
+    validate_beam_request_prefix_cache,
     validate_constraint_generation_limits,
     validate_constraint_table_protocol,
 )
@@ -286,6 +288,11 @@ async def _beam_request_step(
     # Detect branches that were pruned during top-K filtering
     used_parents = set(parent_beam_ids)
     pruned_ids = [pid for pid in prev_beam_internal_ids if pid not in used_parents]
+    parent_cumulative_logprobs = (
+        [float(beam.cum_logprob) for beam in all_beams]
+        if all(hasattr(beam, "cum_logprob") for beam in all_beams)
+        else None
+    )
 
     # Dispatch the consolidated persistent update to the client, unless
     # EngineCore already chained this decode step from the worker's beam
@@ -311,6 +318,7 @@ async def _beam_request_step(
                 data_parallel_rank=data_parallel_rank,
                 priority=priority,
                 parent_beam_indices=parent_beam_indices,
+                parent_cumulative_logprobs=parent_cumulative_logprobs,
                 max_decode_steps=max_decode_steps,
                 # Constraint Tables: the Worker's raw-logits hook needs the step to
                 # run (1/2 for decode; 0 reserved for the constrained prefill).
@@ -362,8 +370,8 @@ async def beam_search(
     max_tokens = params.max_tokens
     ignore_eos = params.ignore_eos
     temperature = params.temperature
-    begin_token = params.begin_token
-    end_token = params.end_token
+    begin_token = getattr(params, "begin_token", None)
+    end_token = getattr(params, "end_token", None)
     catalog_strategy = getattr(params, "catalog_strategy", None)
     constraint_coordinator = getattr(self.models, "constraint_coordinator", None)
     if constraint_coordinator is None:
@@ -544,6 +552,16 @@ async def beam_search(
         constraint_coordinator.strategy, TrieConstraintStrategy
     ):
         use_beam_request = False
+
+    vllm_config = getattr(self.engine_client, "vllm_config", None)
+    cache_config = getattr(vllm_config, "cache_config", None)
+    try:
+        validate_beam_request_prefix_cache(
+            beam_request_active=use_beam_request,
+            prefix_caching_enabled=getattr(cache_config, "enable_prefix_caching", None),
+        )
+    except RuntimeError as exc:
+        raise VLLMValidationError(str(exc), parameter="enable_prefix_caching", value=False) from exc
 
     # Constraint Tables generate candidates in the Worker from a beam-request
     # session (step0 prefill via EngineCore ADD_BATCH cache hook, step1/2 decode
@@ -946,6 +964,9 @@ async def beam_search(
                 inherit_lora_request=False,
             )
             completed.extend(eos_beams)
+            # EOS-masked slots must not become zombie beams: refill them with
+            # the row's best finite score before the fixed-width selection.
+            all_beams_logprob = refill_eos_masked_slots(all_beams_logprob, bool(eos_beams))
 
         # Processing non-EOS tokens
         topn_idx = (
