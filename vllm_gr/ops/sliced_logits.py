@@ -115,6 +115,8 @@ def compute_sliced_logits(
     """
     Computes logits using pre-sliced, contiguous vocabulary projection weights for unquantized models,
     or via a safe logits-post-slicing fallback for quantized models.
+    The quantized fallback projects the full vocabulary, then copies the selected
+    logits into contiguous storage; it does not reduce LM-head projection work.
     Fully optimized for torch.compile and CUDA graph execution.
     """
     cfg_offset, cfg_slice_size, _ = get_vocab_slice_config()
@@ -144,7 +146,7 @@ def compute_sliced_logits(
                 full_logits = F.linear(hidden_states, lm_head.weight, embedding_bias)
 
         if full_logits is not None and full_logits.numel() > 0:
-            return full_logits[..., off : off + sz]
+            return full_logits[..., off : off + sz].contiguous()
         return full_logits
 
     rank_start, rank_end = get_rank_vocab_bounds(lm_head)
@@ -214,6 +216,7 @@ def compute_sliced_logits(
             logits = F.linear(hidden_states, lm_head._sliced_weight, lm_head._sliced_bias)
 
     if lm_head._sliced_need_crop and logits is not None and logits.numel() > 0:
-        logits = logits[..., lm_head._sliced_rel_start : lm_head._sliced_rel_end]
+        # Canonical constraint backends require contiguous [rows, vocab] logits.
+        logits = logits[..., lm_head._sliced_rel_start : lm_head._sliced_rel_end].contiguous()
 
     return logits

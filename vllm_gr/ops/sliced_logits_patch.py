@@ -54,6 +54,19 @@ def apply_sliced_logits_patch() -> bool:
         original_get_logits = LogitsProcessor._get_logits
 
         def patched_get_logits(self, hidden_states, lm_head, embedding_bias):
+            if hasattr(self, "_gr_vocab_slice"):
+                window = self._gr_vocab_slice
+                if window is None:
+                    return original_get_logits(self, hidden_states, lm_head, embedding_bias)
+                return compute_sliced_logits(
+                    hidden_states,
+                    lm_head,
+                    embedding_bias,
+                    offset=window[0],
+                    slice_size=window[1],
+                    logits_processor=self,
+                    orig_get_logits=original_get_logits,
+                )
             if is_vocab_slice_enabled():
                 return compute_sliced_logits(
                     hidden_states,

@@ -41,6 +41,7 @@ class CUDAConstraintBackend:
         "_prefix2_value_offsets",
         "_prefix2_values",
         "_state",
+        "vocab_slice",
     )
 
     def __init__(
@@ -53,6 +54,7 @@ class CUDAConstraintBackend:
         prefix2_value_offsets: torch.Tensor,
         prefix2_values: torch.Tensor,
         info: ConstraintBackendInfo,
+        vocab_slice: tuple[int, int] | None = None,
     ) -> None:
         validate_cuda_sort_capacity(
             int(first_token_ids.numel()),
@@ -66,6 +68,7 @@ class CUDAConstraintBackend:
         self._prefix2_value_offsets: torch.Tensor | None = prefix2_value_offsets
         self._prefix2_values: torch.Tensor | None = prefix2_values
         self._info = info
+        self.vocab_slice = vocab_slice
         self._state = _BackendState.INITIALIZING
 
     @property
@@ -107,9 +110,7 @@ class CUDAConstraintBackend:
         vocab_offset = 0
         expected_logits_vocab_size = table_vocab_size
         if logits.shape[1] != table_vocab_size:
-            from vllm_gr.ops.sliced_logits import get_vocab_slice_config
-
-            offset, slice_size, _ = get_vocab_slice_config()
+            offset, slice_size = self.vocab_slice or (None, None)
             if offset is None or slice_size is None or logits.shape[1] != slice_size:
                 raise ValueError(
                     f"CUDA constraint logits vocab {logits.shape[1]} does not match "

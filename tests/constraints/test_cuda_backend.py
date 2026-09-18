@@ -449,3 +449,109 @@ def test_prelaunched_prefill_orders_prepare_launch_copy_and_event_across_streams
 
     assert recorded_streams == [launch_stream]
     assert workspace.host_prefill_staging[workspace.max_batch].item() == 77
+
+
+@pytest.mark.parametrize("offset", [0, 129])  # type: ignore[misc]
+def test_canonical_worker_enables_vocab_slice_before_first_forward(
+    tmp_path: Path, offset: int
+) -> None:
+    from unittest.mock import MagicMock
+
+    from vllm_gr.config import GRConfig
+    from vllm_gr.config.parser import gr_config_to_mapping
+    from vllm_gr.constraints.artifact_compiler import ConstraintTableArtifactCompiler
+    from vllm_gr.constraints.json_compiler import compile_relations_json
+    from vllm_gr.ops.sliced_logits import (
+        get_vocab_slice_config,
+        is_vocab_slice_enabled,
+    )
+    from vllm_gr.v1.worker.model_runner_patch import (
+        make_load_model_with_constraint_backend,
+        make_shutdown_with_constraint_backend,
+    )
+
+    tokenizer = MagicMock()
+    tokenizer.get_vocab.return_value = {str(i): i for i in range(256)}
+    tokenizer.convert_tokens_to_ids.side_effect = lambda values: [int(v) for v in values]
+    triples = [[str(offset + i) for i in row] for row in [(1, 3, 0), (1, 3, 8), (2, 4, 7)]]
+    table = ConstraintTableArtifactCompiler(
+        tokenizer, 256, tokenizer_digest="sha256:" + "b" * 64
+    ).compile(compile_relations_json(triples))
+    path = tmp_path / "table.safetensors"
+    digest = save_constraint_table_artifact(table, path)
+    config = GRConfig(
+        beam_max_width=2,
+        constraint_table=ConstraintTableConfig(
+            enabled=True,
+            backend=ConstraintTableBackendEnum.CUDA,
+            path=str(path),
+            artifact_digest=digest,
+            tokenizer_digest=table.metadata.tokenizer_digest,
+            max_top_k=2,
+        ),
+    )
+    runner = SimpleNamespace(
+        vllm_config=SimpleNamespace(additional_config={"vllm_gr": gr_config_to_mapping(config)}),
+        model_config=SimpleNamespace(dtype=torch.float16, get_vocab_size=lambda: 256),
+        device=torch.device("cuda"),
+    )
+
+    from vllm.model_executor.layers.logits_processor import LogitsProcessor
+
+    from vllm_gr.ops.sliced_logits_patch import apply_sliced_logits_patch
+
+    apply_sliced_logits_patch()
+
+    def load_weights(self: SimpleNamespace) -> None:
+        assert not is_vocab_slice_enabled()
+        self.model_memory_usage = 0
+        self.model = torch.nn.Sequential(LogitsProcessor(256))
+        self.model[0]._gather_logits = lambda logits: logits
+
+    load = make_load_model_with_constraint_backend(load_weights)
+    shutdown = make_shutdown_with_constraint_backend()
+    try:
+        load(runner)
+        assert runner.model[0]._gr_vocab_slice == (offset, 9)
+        assert get_vocab_slice_config()[:2] == (None, None)
+        # Exercise the existing projection with the worker-derived configuration.
+        torch.manual_seed(0)
+        head = torch.nn.Linear(64, 256, bias=False, device="cuda", dtype=torch.float16)
+        hidden = torch.randn(2, 64, device="cuda", dtype=torch.float16)
+        full_logits = head(hidden)
+        head.quant_method = type(
+            "UnquantizedEmbeddingMethod",
+            (),
+            {
+                "apply": lambda self, layer, hidden, bias=None: torch.nn.functional.linear(
+                    hidden, layer.weight, bias
+                )
+            },
+        )()
+        sliced_logits = runner.model[0]._get_logits(hidden, head, None)
+        assert sliced_logits.shape == (2, 9)
+        torch.testing.assert_close(
+            sliced_logits, full_logits[:, offset : offset + 9], atol=2e-3, rtol=2e-3
+        )
+        # All three steps must preserve global token IDs and candidate scores.
+        for step in range(3):
+            metadata = ConstraintMetadata(
+                prefix_token_ids=torch.tensor(
+                    [[offset + 1, offset + 3, 0]] * 2, dtype=torch.int32, device="cuda"
+                ),
+                temperatures=torch.ones(1, device="cuda"),
+                current_step=step,
+                top_k=2,
+            )
+            expected = runner.constraint_backend.select(full_logits, metadata)
+            actual = runner.constraint_backend.select(sliced_logits, metadata)
+            assert torch.equal(actual.token_ids, expected.token_ids)
+            assert torch.equal(actual.valid_mask, expected.valid_mask)
+            torch.testing.assert_close(actual.logprobs, expected.logprobs, atol=2e-3, rtol=2e-3)
+        # A reload must clear the old slice before constructing the next model.
+        load(runner)
+        assert runner.model[0]._gr_vocab_slice == (offset, 9)
+        assert get_vocab_slice_config()[:2] == (None, None)
+    finally:
+        shutdown(runner)
+    assert not is_vocab_slice_enabled()

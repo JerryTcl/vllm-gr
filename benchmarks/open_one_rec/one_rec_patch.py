@@ -433,6 +433,18 @@ def patched_add_parser(parser):
 def patched_add_cli_args(parser):
     """Patch add_cli_args to include onerec arguments."""
     original_add_cli_args(parser)
+    parser.add_argument(
+        "--beam-search-v1",
+        action="store_true",
+        help="Use canonical V1 and measure sequential text-to-text cache misses",
+    )
+    parser.add_argument("--constraint-triples", help="Canonical three-step constraint JSON for V1")
+    parser.add_argument(
+        "--warmup-requests",
+        type=int,
+        default=10,
+        help="Warmup requests excluded from V1 latency statistics",
+    )
     _add_dataset_to_parser_choices(parser, DATASET_NAME)
     _add_onerec_arguments(parser)
     return parser
@@ -505,6 +517,8 @@ def _run_offline_beam_search_benchmark(args):
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
+    use_v1 = getattr(args, "beam_search_v1", False)
+    sample_size = max(args.num_prompts, args.warmup_requests) if use_v1 else args.num_prompts
     # Load dataset
     logger.info(f"Loading OneRec dataset from {args.dataset_path}")
     dataset = OneRecDataset(
@@ -512,14 +526,22 @@ def _run_offline_beam_search_benchmark(args):
         task_types=args.task_types.split(","),
         tokenizer=tokenizer,
         custom_input_len=getattr(args, "custom_input_len", None),
-        sample_size=args.num_prompts,
+        sample_size=sample_size,
+        enable_thinking=getattr(args, "enable_thinking", None),
     )
 
     # Sample requests
     requests = dataset.sample(
-        num_requests=args.num_prompts,
+        num_requests=sample_size,
+        no_oversample=use_v1,
         tokenizer=tokenizer,
     )
+
+    if use_v1:
+        from benchmarks.open_one_rec.one_rec_v1_benchmark import run_v1_benchmark
+
+        run_v1_benchmark(args, tokenizer, requests)
+        return
 
     prompts = [{"prompt": req.prompt} for req in requests]
 
@@ -598,7 +620,11 @@ def _run_offline_beam_search_benchmark(args):
 def patched_main(args):
     """Patch main to handle beam search and fix tokenizer initialization."""
     # Check if this is an offline beam search benchmark
-    is_beam_search = USE_BEAM_SEARCH or (hasattr(args, "n") and args.n and args.n > 1)
+    is_beam_search = (
+        getattr(args, "beam_search_v1", False)
+        or USE_BEAM_SEARCH
+        or (hasattr(args, "n") and args.n and args.n > 1)
+    )
     is_offline = not hasattr(args, "endpoint") or not args.endpoint
 
     if is_beam_search and is_offline and args.dataset_name == DATASET_NAME:

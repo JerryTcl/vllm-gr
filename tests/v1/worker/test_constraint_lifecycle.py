@@ -25,6 +25,7 @@ class _Backend:
     def __init__(self, *, device_memory_bytes: int = 32) -> None:
         self.info = SimpleNamespace(device_memory_bytes=device_memory_bytes)
         self.close_calls = 0
+        self.vocab_slice: tuple[int, int] | None = None
 
     def close(self) -> None:
         self.close_calls += 1
@@ -266,3 +267,138 @@ def test_canonical_capacity_validation_happens_after_weights(
         make_load_model_with_constraint_backend(original)(runner)
     assert events == ["weights"]
     assert runner.constraint_backend is None
+
+
+def test_canonical_cuda_tp_falls_back_to_full_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+    from vllm.model_executor.layers.logits_processor import LogitsProcessor
+
+    from vllm_gr.config import ConstraintTableBackendEnum
+    from vllm_gr.ops.sliced_logits import get_vocab_slice_config, set_vocab_slice_config
+    from vllm_gr.ops.sliced_logits_patch import apply_sliced_logits_patch
+
+    apply_sliced_logits_patch()
+    runner = _runner()
+    runner.vllm_config.additional_config["vllm_gr"]["constraint_table"]["backend"] = "cuda"
+    runner.vllm_config.parallel_config = SimpleNamespace(tensor_parallel_size=2)
+    backend = _Backend()
+    backend.info.backend = ConstraintTableBackendEnum.CUDA
+    backend.vocab_slice = (3, 5)
+    monkeypatch.setattr(
+        "vllm_gr.constraints.loader.load_constraint_backend", lambda **kwargs: backend
+    )
+    gathered: list[torch.Tensor] = []
+
+    def gather(logits: torch.Tensor) -> torch.Tensor:
+        gathered.append(logits)
+        return logits
+
+    def weights(runner: Any) -> str:
+        runner.model = torch.nn.Sequential(LogitsProcessor(32000))
+        runner.model[0]._gather_logits = gather
+        return "loaded"
+
+    head = torch.nn.Linear(8, 256, bias=False)
+    head.quant_method = SimpleNamespace(
+        apply=lambda layer, hidden, bias=None: torch.nn.functional.linear(
+            hidden, layer.weight, bias
+        )
+    )
+    hidden = torch.randn(2, 8)
+    old = get_vocab_slice_config()
+    set_vocab_slice_config(99, 5)
+    try:
+        assert make_load_model_with_constraint_backend(weights)(runner) == "loaded"
+        assert runner.constraint_backend is backend
+        assert backend.vocab_slice is None
+        assert runner.model[0]._gr_vocab_slice is None
+        actual = runner.model[0]._get_logits(hidden, head, None)
+        torch.testing.assert_close(actual, head(hidden))
+        assert len(gathered) == 1 and gathered[0].shape == (2, 256)
+        assert not hasattr(head, "_sliced_weight")
+        assert get_vocab_slice_config()[:2] == (99, 5)
+    finally:
+        make_shutdown_with_constraint_backend()(runner)
+        set_vocab_slice_config(*old)
+
+
+def test_two_runners_keep_independent_projection_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    from vllm.model_executor.layers.logits_processor import LogitsProcessor
+
+    import vllm_gr.constraints.loader as loader
+    from vllm_gr.config import ConstraintTableBackendEnum
+    from vllm_gr.ops.sliced_logits import get_vocab_slice_config, set_vocab_slice_config
+    from vllm_gr.ops.sliced_logits_patch import apply_sliced_logits_patch
+
+    apply_sliced_logits_patch()
+    backends = []
+    for window in ((3, 5), (40, 5), (0, 32000)):
+        backend = _Backend()
+        backend.info.backend = ConstraintTableBackendEnum.CUDA
+        backend.vocab_slice = window
+        backends.append(backend)
+    queue = iter(backends)
+    monkeypatch.setattr(loader, "load_constraint_backend", lambda **kwargs: next(queue))
+
+    def weights(runner: Any) -> None:
+        runner.model_memory_usage = 0
+        runner.model = torch.nn.Sequential(LogitsProcessor(32000))
+        runner.model[0]._gather_logits = lambda logits: logits
+
+    load = make_load_model_with_constraint_backend(weights)
+    close = make_shutdown_with_constraint_backend()
+    a, b, full = _runner(), _runner(), _runner()
+    old = get_vocab_slice_config()
+    set_vocab_slice_config(99, 5)
+    try:
+        load(a)
+        load(b)
+        load(full)
+        head = torch.nn.Linear(8, 256, bias=False)
+        head.quant_method = type(
+            "UnquantizedEmbeddingMethod",
+            (),
+            {
+                "apply": lambda self, layer, hidden, bias=None: torch.nn.functional.linear(
+                    hidden, layer.weight, bias
+                )
+            },
+        )()
+        hidden = torch.randn(2, 8)
+        expected = head(hidden)
+        for runner, offset in ((a, 3), (b, 40)):
+            actual = runner.model[0]._get_logits(hidden, head, None)
+            torch.testing.assert_close(actual, expected[:, offset : offset + 5])
+        close(b)
+        torch.testing.assert_close(a.model[0]._get_logits(hidden, head, None), expected[:, 3:8])
+        torch.testing.assert_close(full.model[0]._get_logits(hidden, head, None), expected)
+        assert full.model[0]._gr_vocab_slice is None
+        assert get_vocab_slice_config()[:2] == (99, 5)
+        close(a)
+        assert backends[0].close_calls == backends[1].close_calls == 1
+    finally:
+        close(a)
+        close(b)
+        close(full)
+        set_vocab_slice_config(*old)
+
+
+def test_dispatcher_import_without_cuda_or_triton() -> None:
+    import subprocess
+    import sys
+
+    code = """
+import importlib.abc
+import sys
+import torch
+import vllm.logger
+class BlockCUDA(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'triton' or fullname.startswith('triton.') or fullname.startswith('vllm_gr.ops.cuda') or fullname == 'vllm_gr.constraints.cuda_backend':
+            raise ImportError('blocked CUDA/Triton dependency: ' + fullname)
+sys.meta_path.insert(0, BlockCUDA())
+import vllm_gr.plugin
+from vllm_gr.v1.worker import model_runner_patch
+assert 'vllm_gr.constraints.cuda_backend' not in sys.modules
+assert 'vllm_gr.ops.cuda.rec_constrained_topk' not in sys.modules
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=60)

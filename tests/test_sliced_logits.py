@@ -299,8 +299,11 @@ def test_quantized_lm_head_fallback() -> None:
     hidden_states = torch.randn(batch_size, embed_dim)
     full_weight = torch.randn(vocab_size, embed_dim)
 
+    projected_weight_shapes = []
+
     class DummyQuantMethod:
         def apply(self, layer: Any, x: torch.Tensor, bias: Any = None) -> torch.Tensor:
+            projected_weight_shapes.append(tuple(layer.weight.shape))
             return F.linear(x, layer.weight, bias)
 
     class MockQuantizedHead(nn.Module):  # type: ignore[misc]
@@ -321,6 +324,8 @@ def test_quantized_lm_head_fallback() -> None:
     )
 
     assert sliced_logits.shape == (batch_size, slice_size)
+    assert sliced_logits.is_contiguous()
+    assert projected_weight_shapes == [(vocab_size, embed_dim)]
     assert torch.allclose(sliced_logits, ref_sliced, atol=1e-5, rtol=1e-5)
     # Ensure pre-sliced weight proxy was NOT created for quantized head
     assert not hasattr(quant_head, "_sliced_weight")

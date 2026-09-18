@@ -10,6 +10,7 @@ from types import ModuleType
 
 from vllm.logger import init_logger
 
+from vllm_gr.config import ConstraintTableBackendEnum
 from vllm_gr.v1.worker.model_runner_common import (
     _WORKER_CAPTURE_PATCH_MARKER,
     _WORKER_DETERMINE_PATCH_MARKER,
@@ -36,6 +37,9 @@ def close_constraint_backend(runner: object) -> None:
     # Detach first so no concurrent observer can discover a Backend while it is
     # being closed, and so repeated shutdown/load calls are naturally idempotent.
     setattr(runner, "constraint_backend", None)
+    for processor in getattr(runner, "_gr_vocab_slice_processors", ()):
+        processor._gr_vocab_slice = None
+    runner._gr_vocab_slice_processors = ()
     if backend is not None:
         backend.close()
 
@@ -69,12 +73,13 @@ def make_load_model_with_constraint_backend(original):
         # Backend before loading weights so a failed reload cannot leave stale
         # canonical tables reachable from this runner.
         close_constraint_backend(self)
+        gr_config = GRConfig.from_vllm_config(getattr(self, "vllm_config", None))
+        table_config = gr_config.constraint_table
+        parallel = getattr(getattr(self, "vllm_config", None), "parallel_config", None)
         result = original(self, *args, **kwargs)
 
         backend = None
         try:
-            gr_config = GRConfig.from_vllm_config(getattr(self, "vllm_config", None))
-            table_config = gr_config.constraint_table
             if table_config is None or not table_config.enabled:
                 return result
 
@@ -113,6 +118,28 @@ def make_load_model_with_constraint_backend(original):
             # Backend only after readiness and returns an immediately usable CPU
             # Backend, so requests never observe a partially initialized object.
             self.constraint_backend = backend
+            if getattr(backend.info, "backend", None) is ConstraintTableBackendEnum.CUDA:
+                # Import GPU layers only after selecting the CUDA backend.
+                from vllm.model_executor.layers.logits_processor import LogitsProcessor
+
+                window = backend.vocab_slice
+                if getattr(parallel, "tensor_parallel_size", 1) != 1:
+                    # All ranks must retain the original full-logits collective path.
+                    window = None
+                    backend.vocab_slice = None
+                    logger.info(
+                        "vllm-gr: canonical CUDA vocabulary slicing disabled for TP>1; "
+                        "using full-vocabulary projection"
+                    )
+                if window == (0, _runner_vocab_size(self)):
+                    window = None  # No benefit from cloning the entire LM head.
+                processors = tuple(
+                    module for module in self.model.modules() if isinstance(module, LogitsProcessor)
+                )
+                for processor in processors:
+                    # Explicit None also overrides unrelated legacy global settings.
+                    processor._gr_vocab_slice = window
+                self._gr_vocab_slice_processors = processors
             return result
         except BaseException:
             if backend is not None:

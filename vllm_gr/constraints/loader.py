@@ -251,6 +251,10 @@ def _upload_cuda_backend(
             host_memory_bytes=0,
             device_memory_bytes=_unique_storage_bytes(device_tables),
         )
+        # One shared window covers all three decode steps; table IDs stay global.
+        token_arrays = (table.first_token_ids, table.prefix1_values, table.prefix2_values)
+        offset = min(int(ids.min()) for ids in token_arrays)
+        end = max(int(ids.max()) for ids in token_arrays) + 1
         backend = CUDAConstraintBackend(
             first_token_ids=device_tables["first_token_ids"],
             prefix1_offsets=device_tables["prefix1_offsets"],
@@ -259,6 +263,7 @@ def _upload_cuda_backend(
             prefix2_value_offsets=device_tables["prefix2_value_offsets"],
             prefix2_values=device_tables["prefix2_values"],
             info=info,
+            vocab_slice=(offset, end - offset),
         )
         return backend, cases
     except BaseException:
