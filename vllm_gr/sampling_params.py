@@ -86,8 +86,16 @@ class BeamSearchParams(
                     value=expansion_widths,
                 )
             retained_widths = widths or [self.beam_width] * decode_steps
-            input_width = 1
-            for expansion_width, output_width in zip(expansion_widths, retained_widths):
+            if expansion_widths[0] != retained_widths[0]:
+                raise VLLMValidationError(
+                    "the first expansion width must equal the first retained width",
+                    parameter="expansion_widths",
+                    value=expansion_widths,
+                )
+            input_width = retained_widths[0]
+            for expansion_width, output_width in zip(
+                expansion_widths[1:], retained_widths[1:]
+            ):
                 if output_width > input_width * expansion_width:
                     raise VLLMValidationError(
                         "each retained width must not exceed input_width * expansion_width",

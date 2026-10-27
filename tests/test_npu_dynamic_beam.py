@@ -78,12 +78,20 @@ def test_expansion_widths_is_validated_against_retained_widths() -> None:
     )
     assert params.expansion_widths == [2, 2, 1]
 
-    with pytest.raises(VLLMValidationError, match=r"input_width \* expansion_width"):
+    with pytest.raises(VLLMValidationError, match="first expansion width"):
         BeamSearchParams(
             beam_width=4,
             max_tokens=3,
             dynamic_beam_widths=[2, 4, 4],
             expansion_widths=[1, 2, 1],
+        )
+
+    with pytest.raises(VLLMValidationError, match=r"input_width \* expansion_width"):
+        BeamSearchParams(
+            beam_width=4,
+            max_tokens=3,
+            dynamic_beam_widths=[2, 4, 4],
+            expansion_widths=[2, 1, 1],
         )
 
     with pytest.raises(VLLMValidationError, match="expansion_widths"):

@@ -266,20 +266,7 @@ class DynamicBeamState:
             raise RuntimeError("dynamic Beam state has already been initialized")
         if width > self.context.max_beams:
             raise ValueError("initial Beam width exceeds the context capacity")
-        candidate_width = prefill.token_ids.shape[1] if prefill.token_ids.ndim == 2 else 0
-        if candidate_width < width:
-            raise ValueError("initial retained width exceeds the candidate count")
-        self._validate_candidates(prefill, self.batch_size, candidate_width)
-        if candidate_width != width:
-            scores = prefill.logprobs.masked_fill(
-                ~prefill.valid_mask | ~torch.isfinite(prefill.logprobs), float("-inf")
-            )
-            scores, indices = scores.topk(width, dim=1, largest=True, sorted=True)
-            prefill = ConstraintOutput(
-                prefill.token_ids.gather(1, indices),
-                scores,
-                prefill.valid_mask.gather(1, indices),
-            )
+        self._validate_candidates(prefill, self.batch_size, width)
         shape = (self.batch_size, width, self.max_decode_steps)
         sequence = torch.zeros(shape, dtype=torch.int32, device=self.device)
         valid = prefill.valid_mask & torch.isfinite(prefill.logprobs)

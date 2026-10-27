@@ -34,7 +34,7 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unav
         ((2,), None),
         ((3, 2), None),
         ((4, 4, 4), None),
-        ((2, 4, 4), (4, 2, 1)),
+        ((2, 4, 4), (2, 2, 1)),
     ],
 )
 def test_dynamic_stage_execution_and_reuse(widths, expansion_widths, graph, batch, constrained):

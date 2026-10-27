@@ -205,6 +205,19 @@ def test_expansion_widths_reject_more_than_three_steps_at_protocol_boundary() ->
         )
 
 
+def test_expansion_widths_require_matching_bootstrap_width() -> None:
+    with pytest.raises(BeamContractError, match="first expansion width"):
+        validate_beam_batch_request(
+            _request(
+                beam_params=_params(
+                    beam_width=4,
+                    dynamic_beam_widths=(2, 4, 4),
+                    expansion_widths=(4, 2, 1),
+                )
+            )
+        )
+
+
 def test_request_rejects_non_default_resource_duplicate_stops_and_wide_output() -> None:
     with pytest.raises(BeamContractError, match="unique"):
         validate_beam_batch_request(_request(beam_params=_params(stop_token_ids=(2, 2))))

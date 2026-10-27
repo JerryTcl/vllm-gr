@@ -169,16 +169,16 @@ def test_widening_keeps_multiple_winners_from_one_parent():
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
-def test_branch_candidates_are_independent_from_retained_widths(device):
+def test_decode_branch_candidates_are_independent_from_retained_widths(device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA unavailable")
     ctx = context(1, device)
     state = DynamicBeamState(ctx, 1, 2)
     state.initialize(
         ConstraintOutput(
-            torch.tensor([[11, 12, 13, 14]], dtype=torch.int32, device=device),
-            torch.tensor([[-0.4, -0.1, -0.3, -0.2]], device=device),
-            torch.ones((1, 4), dtype=torch.bool, device=device),
+            torch.tensor([[12, 14]], dtype=torch.int32, device=device),
+            torch.tensor([[-0.1, -0.2]], device=device),
+            torch.ones((1, 2), dtype=torch.bool, device=device),
         ),
         2,
     )

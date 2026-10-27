@@ -289,10 +289,7 @@ def _validate_beam_params(params: BeamBatchParams) -> None:
         ):
             _fail("beam_params.expansion_widths must contain one immutable value per step")
         retained_widths = widths or (beam_width,) * params.max_tokens
-        input_width = 1
-        for index, (expansion_width, output_width) in enumerate(
-            zip(expansion_widths, retained_widths)
-        ):
+        for index, expansion_width in enumerate(expansion_widths):
             expansion_width = _positive_int(
                 f"beam_params.expansion_widths[{index}]", expansion_width
             )
@@ -301,6 +298,12 @@ def _validate_beam_params(params: BeamBatchParams) -> None:
                     "beam_params.expansion_widths entries must be "
                     f"<= {MAX_EXPANSION_WIDTH}"
                 )
+        if expansion_widths[0] != retained_widths[0]:
+            _fail("the first expansion width must equal the first retained width")
+        input_width = retained_widths[0]
+        for expansion_width, output_width in zip(
+            expansion_widths[1:], retained_widths[1:]
+        ):
             if output_width > input_width * expansion_width:
                 _fail("each retained width must not exceed input_width * expansion_width")
             input_width = output_width

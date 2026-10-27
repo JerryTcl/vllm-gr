@@ -241,10 +241,11 @@ class BeamItemCandidates:
 ```
 
 Bootstrap uses `P=1`. Decode uses `P=num_active_beams`, with
-`P <= W`. The reference never fabricates W Prefill parent rows. Production
-Without `expansion_widths`, candidate generation uses `K=W_out`. CUDA may set K
-independently for each stage, provided the complete pool can retain W winners:
-`W_out <= P*K`. Both values remain within the existing limit of 256.
+`P <= W`. The reference never fabricates W Prefill parent rows.
+Without `expansion_widths`, candidate generation uses `K=W_out`. CUDA requires
+`K_1=W_1` for bootstrap and may set K independently for later stages, provided
+the complete pool can retain W winners: `W_i <= W_(i-1)*K_i`. Both values
+remain within the existing limit of 256.
 
 Both candidate adapters provide FP32 local log probabilities. The selection
 core does not compute softmax.

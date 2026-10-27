@@ -368,7 +368,7 @@ params = BeamSearchParams(
 outputs = llm.beam_search_v1(prompts, params)
 ```
 
-For CUDA, K and W can be configured independently:
+For CUDA, K and W can be configured independently after the first stage:
 
 ```python
 params = BeamSearchParams(
@@ -381,8 +381,9 @@ params = BeamSearchParams(
 )
 ```
 
-Each stage must satisfy `W_i <= P_i * K_i`, where `P_1=1` and later
-`P_i=W_(i-1)`. Both W and K remain limited to 256 in this implementation.
+The first stage requires `K_1=W_1`. Each later stage must satisfy
+`W_i <= W_(i-1) * K_i`. Both W and K remain limited to 256 in this
+implementation.
 
 `beam_width` remains the engine capacity in `[1, 256]` and must equal
 `beam.max_width`.
