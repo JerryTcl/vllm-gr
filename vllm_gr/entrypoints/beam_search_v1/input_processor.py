@@ -175,8 +175,11 @@ def _create_batch_request(
     if sampling_params is None or sampling_params.max_tokens is None:
         raise BeamSearchRequestError("beam_search_v1 requires sampling parameters with max_tokens")
     dynamic_widths = getattr(params, "dynamic_beam_widths", None)
+    expansion_widths = getattr(params, "expansion_widths", None)
     result_width = getattr(params, "result_width", None)
     device = getattr(getattr(vllm_config, "device_config", None), "device", "cuda")
+    if expansion_widths is not None and str(device).split(":")[0] != "cuda":
+        raise BeamSearchRequestError("expansion_widths requires CUDA beam_search_v1")
     if str(device).split(":")[0] not in ("cuda", "npu") and (
         dynamic_widths is not None or result_width is not None
     ):
@@ -209,6 +212,7 @@ def _create_batch_request(
         length_penalty=params.length_penalty,
         catalog_strategy=getattr(params, "catalog_strategy", None),
         dynamic_beam_widths=None if dynamic_widths is None else tuple(dynamic_widths),
+        expansion_widths=None if expansion_widths is None else tuple(expansion_widths),
     )
     final_width = (
         batch_params.beam_width

@@ -63,10 +63,11 @@ class BeamBatchParams(
     constraint_resource_id: str = DEFAULT_CONSTRAINT_RESOURCE_ID
     length_penalty: float = 1.0
     catalog_strategy: Literal["fill", "null"] | None = None
-    # A new decoder accepts old arrays through this trailing default. New
-    # arrays still include this field, so old strict decoders reject them even
+    # New decoders accept old arrays through these trailing defaults. New
+    # arrays still include both fields, so old strict decoders reject them even
     # for fixed-width calls. All participating processes need the same schema.
     dynamic_beam_widths: tuple[int, ...] | None = None
+    expansion_widths: tuple[int, ...] | None = None
 
 
 class BeamOutputOptions(
@@ -275,6 +276,27 @@ def _validate_beam_params(params: BeamBatchParams) -> None:
             normalized = _positive_int(f"beam_params.dynamic_beam_widths[{index}]", width)
             if normalized > beam_width:
                 _fail("beam_params.dynamic_beam_widths entries must not exceed beam_width")
+    expansion_widths = params.expansion_widths
+    if expansion_widths is not None:
+        if (
+            params.max_tokens not in (1, 2, 3)
+            or not isinstance(expansion_widths, tuple)
+            or len(expansion_widths) != params.max_tokens
+        ):
+            _fail("beam_params.expansion_widths must contain one immutable value per step")
+        retained_widths = widths or (beam_width,) * params.max_tokens
+        input_width = 1
+        for index, (expansion_width, output_width) in enumerate(
+            zip(expansion_widths, retained_widths)
+        ):
+            expansion_width = _positive_int(
+                f"beam_params.expansion_widths[{index}]", expansion_width
+            )
+            if expansion_width > MAX_BEAM_WIDTH:
+                _fail(f"beam_params.expansion_widths entries must be <= {MAX_BEAM_WIDTH}")
+            if output_width > input_width * expansion_width:
+                _fail("each retained width must not exceed input_width * expansion_width")
+            input_width = output_width
     if (
         isinstance(params.temperature, bool)
         or not isinstance(params.temperature, (int, float))

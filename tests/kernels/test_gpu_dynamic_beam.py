@@ -25,8 +25,19 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unav
 @pytest.mark.parametrize("constrained", [True, False])
 @pytest.mark.parametrize("batch", [1, 2, 4])
 @pytest.mark.parametrize("graph", [False, True])
-@pytest.mark.parametrize("widths", [(4, 2, 1), (1, 3, 4), (3, 3, 2), (2,), (3, 2), (4, 4, 4)])
-def test_dynamic_stage_execution_and_reuse(widths, graph, batch, constrained):
+@pytest.mark.parametrize(
+    "widths,expansion_widths",
+    [
+        ((4, 2, 1), None),
+        ((1, 3, 4), None),
+        ((3, 3, 2), None),
+        ((2,), None),
+        ((3, 2), None),
+        ((4, 4, 4), None),
+        ((2, 4, 4), (4, 2, 1)),
+    ],
+)
+def test_dynamic_stage_execution_and_reuse(widths, expansion_widths, graph, batch, constrained):
     worker = admission_worker()
     from tests.constraints.test_table import make_table
     from vllm_gr.constraints.loader import _upload_cuda_backend
@@ -59,7 +70,11 @@ def test_dynamic_stage_execution_and_reuse(widths, graph, batch, constrained):
                 ),
                 num_prompt_tokens=sum(7 + i for i in range(batch)),
                 num_prompt_tokens_by_request=tuple(7 + i for i in range(batch)),
-                beam_params=msgspec.structs.replace(m.beam_params, dynamic_beam_widths=widths),
+                beam_params=msgspec.structs.replace(
+                    m.beam_params,
+                    dynamic_beam_widths=widths,
+                    expansion_widths=expansion_widths,
+                ),
                 output_options=msgspec.structs.replace(
                     m.output_options, num_return_sequences=min(2, widths[-1])
                 ),
@@ -69,7 +84,9 @@ def test_dynamic_stage_execution_and_reuse(widths, graph, batch, constrained):
                 req: (7 + i if stage == 0 else 1) for i, req in enumerate(m.request_ids)
             }
             owner = get_stage_runner(worker, scheduled)
-            assert (owner.dynamic is not None) == any(width != 4 for width in widths)
+            assert (owner.dynamic is not None) == (
+                expansion_widths is not None or any(width != 4 for width in widths)
+            )
             if first_owner is None:
                 first_owner = owner
             assert owner is first_owner
@@ -91,9 +108,12 @@ def test_dynamic_stage_execution_and_reuse(widths, graph, batch, constrained):
                 ids = torch.tensor([prefix[-1] if prefix else 0], device="cuda")
                 logits = base if not prefix else base + ids[:, None] * weights
                 logprobs = logits.float().reshape(-1).log_softmax(0).cpu().tolist()
+                parent_choices = []
                 for token in legal.get(prefix, []) if constrained else range(6):
                     total = float(torch.tensor(score, dtype=torch.float32) + logprobs[token])
-                    choices.append((prefix + (token,), total))
+                    parent_choices.append((prefix + (token,), total))
+                top_k = width if expansion_widths is None else expansion_widths[stage]
+                choices.extend(sorted(parent_choices, key=lambda item: -item[1])[:top_k])
             expected = sorted(choices, key=lambda item: -item[1])[:width]
             receipt = owner.sample()
             result = getattr(receipt.get_output(), GR_WORKER_RESULT_ATTR)[m.session_id]

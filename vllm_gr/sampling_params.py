@@ -25,10 +25,13 @@ class BeamSearchParams(
     # historical "fill"; the Constraint Table backend rejects an explicit
     # value because candidate validity is enforced in the Worker.
     catalog_strategy: str | None = None
-    # NPU V1 only. Each entry is the number of winners retained after that
+    # CUDA/NPU V1. Each entry is the number of winners retained after that
     # generated token; beam_width remains the fixed storage capacity.
     dynamic_beam_widths: list[int] | None = None
     result_width: int | None = None
+    # CUDA V1 only. Per-parent candidate count for each generated token.
+    # When omitted, the historical K=W behavior is preserved.
+    expansion_widths: list[int] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -47,29 +50,51 @@ class BeamSearchParams(
                 parameter="catalog_strategy",
                 value=self.catalog_strategy,
             )
+        decode_steps = (
+            self.max_tokens - int(self.begin_token is not None) - int(self.end_token is not None)
+            if type(self.max_tokens) is int
+            else 0
+        )
         widths = self.dynamic_beam_widths
-        if widths is not None:
-            decode_steps = (
-                self.max_tokens
-                - int(self.begin_token is not None)
-                - int(self.end_token is not None)
-                if type(self.max_tokens) is int
-                else 0
+        if widths is not None and (
+            not isinstance(widths, list)
+            or decode_steps not in (1, 2, 3)
+            or len(widths) != decode_steps
+            or any(type(width) is not int or not 1 <= width <= self.beam_width for width in widths)
+        ):
+            raise VLLMValidationError(
+                "dynamic_beam_widths must contain one integer in [1, beam_width] "
+                "per effective generation step (1, 2, or 3 steps)",
+                parameter="dynamic_beam_widths",
+                value=widths,
             )
+        expansion_widths = self.expansion_widths
+        if expansion_widths is not None:
             if (
-                not isinstance(widths, list)
+                not isinstance(expansion_widths, list)
                 or decode_steps not in (1, 2, 3)
-                or len(widths) != decode_steps
+                or len(expansion_widths) != decode_steps
                 or any(
-                    type(width) is not int or not 1 <= width <= self.beam_width for width in widths
+                    type(factor) is not int or not 1 <= factor <= MAX_BEAM_WIDTH
+                    for factor in expansion_widths
                 )
             ):
                 raise VLLMValidationError(
-                    "dynamic_beam_widths must contain one integer in [1, beam_width] "
-                    "per effective generation step (1, 2, or 3 steps)",
-                    parameter="dynamic_beam_widths",
-                    value=widths,
+                    "expansion_widths must contain one integer in "
+                    f"[1, {MAX_BEAM_WIDTH}] per effective generation step",
+                    parameter="expansion_widths",
+                    value=expansion_widths,
                 )
+            retained_widths = widths or [self.beam_width] * decode_steps
+            input_width = 1
+            for expansion_width, output_width in zip(expansion_widths, retained_widths):
+                if output_width > input_width * expansion_width:
+                    raise VLLMValidationError(
+                        "each retained width must not exceed input_width * expansion_width",
+                        parameter="expansion_widths",
+                        value=expansion_widths,
+                    )
+                input_width = output_width
         final_width = self.beam_width if widths is None else widths[-1]
         if self.result_width is not None and (
             type(self.result_width) is not int or not 1 <= self.result_width <= final_width

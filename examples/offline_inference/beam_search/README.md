@@ -342,11 +342,11 @@ latency divided by B is only amortized cost, not individual request latency.
 NPU graph counters saved in the report include both warmup and measured runs;
 check the captured shape and `fallbacks` when comparing graph performance.
 
-### NPU per-stage Beam widths through the Python API
+### Per-stage Beam widths through the Python API
 
-NPU V1 supports a retained Beam width for each generated token, plus a separate
-final result limit. CUDA and legacy entrypoints reject these request options;
-omitting both options preserves the existing fixed-width behavior.
+CUDA and NPU V1 support a retained Beam width for each generated token, plus a
+separate final result limit. CUDA can additionally set a per-parent candidate
+count for each stage. Omitting it preserves the existing `K=W` behavior.
 
 For an existing NPU V1 engine `llm` and a B=1, 2, or 4 batch `prompts`, use:
 
@@ -367,6 +367,22 @@ params = BeamSearchParams(
 )
 outputs = llm.beam_search_v1(prompts, params)
 ```
+
+For CUDA, K and W can be configured independently:
+
+```python
+params = BeamSearchParams(
+    beam_width=4,
+    dynamic_beam_widths=[2, 4, 4],  # W1, W2, W3
+    expansion_widths=[2, 2, 1],        # K1, K2, K3 per parent
+    result_width=2,
+    max_tokens=3,
+    ignore_eos=True,
+)
+```
+
+Each stage must satisfy `W_i <= P_i * K_i`, where `P_1=1` and later
+`P_i=W_(i-1)`. Both W and K remain limited to 256 in this implementation.
 
 `beam_width` remains the engine capacity in `[1, 256]` and must equal
 `beam.max_width`.
@@ -399,8 +415,8 @@ add concurrent sessions or per-prompt schedules. Engine processes must use the
 same code and schema revision across the frontend, EngineCore, and Workers.
 Stop and restart them together when deploying this change. Mixed-revision
 operation and rolling upgrades are unsupported for **all** Beam requests,
-including fixed-width requests: the appended array-encoded schedule field is
-sent even when its value is `None`, and an older strict decoder rejects it.
+including fixed-width requests: the appended array-encoded schedule fields are
+sent even when their values are `None`, and an older strict decoder rejects them.
 Matching request-contract version numbers alone do not establish compatibility.
 
 This path uses a fixed generated-token horizon: `ignore_eos=True` becomes
