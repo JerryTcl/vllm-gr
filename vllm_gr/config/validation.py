@@ -14,6 +14,7 @@ from vllm_gr.config.models import (
     CONSTRAINT_TABLE_FORMAT,
     GR_CONFIG_SCHEMA_VERSION,
     MAX_BEAM_WIDTH,
+    REGION_TRIE_FORMAT,
     SUPPORTED_BEAM_BATCH_SIZES,
     BeamExecutionMode,
     ConstraintBackend,
@@ -112,12 +113,12 @@ def validate_constraint_table_path(value: object) -> str | None:
 
 
 def validate_constraint_table_format(value: object) -> str:
-    if value != CONSTRAINT_TABLE_FORMAT:
+    if value not in (CONSTRAINT_TABLE_FORMAT, REGION_TRIE_FORMAT):
         raise ValueError(
             f"unsupported vllm-gr constraint_table.format {value!r}; "
-            f"expected {CONSTRAINT_TABLE_FORMAT!r}"
+            f"expected {CONSTRAINT_TABLE_FORMAT!r} or {REGION_TRIE_FORMAT!r}"
         )
-    return CONSTRAINT_TABLE_FORMAT
+    return value
 
 
 def _validate_sha256(value: object, name: str) -> str | None:

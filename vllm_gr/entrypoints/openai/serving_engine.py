@@ -93,6 +93,7 @@ async def beam_search_v1(
         trace_headers=trace_headers,
         priority=priority,
         data_parallel_rank=rank,
+        regions=(getattr(params, "region", None) or "",) * len(prompts),
     )
     outputs = await run_beam_search_v1_async(
         create_online_beam_search_v1_client(self),

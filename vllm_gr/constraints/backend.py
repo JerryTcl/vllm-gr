@@ -49,6 +49,10 @@ class ConstraintMetadata:
     temperatures: torch.Tensor  # float32 [1] or [rows]
     current_step: int  # 0 / 1 / 2
     top_k: int
+    # Region Trie only. Negative IDs intentionally select the unconstrained
+    # row semantics used by GR-NOVI. Canonical single-table callers omit it.
+    region_ids: torch.Tensor | None = None  # int32 [rows]
+    has_unconstrained_rows: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +143,19 @@ def validate_select_inputs(
             raise ValueError(
                 f"{name}.device {tensor.device} must match logits.device {logits.device}"
             )
+
+    region_ids = metadata.region_ids
+    if region_ids is not None:
+        if tuple(region_ids.shape) != (rows,):
+            raise ValueError(f"region_ids must have shape [{rows}], got {tuple(region_ids.shape)}")
+        if region_ids.dtype != torch.int32:
+            raise ValueError(f"region_ids must be int32, got {region_ids.dtype}")
+        if region_ids.device != logits.device:
+            raise ValueError("region_ids.device must match logits.device")
+        if not region_ids.is_contiguous():
+            raise ValueError("region_ids must be contiguous")
+    if not isinstance(metadata.has_unconstrained_rows, bool):
+        raise ValueError("has_unconstrained_rows must be a bool")
 
     current_step = metadata.current_step
     if isinstance(current_step, bool) or not isinstance(current_step, int):

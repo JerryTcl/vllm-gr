@@ -159,6 +159,7 @@ class GRLLM(LLM):
         lora_request: Union[list["LoRARequest"], "LoRARequest", None] = None,
         use_tqdm: bool = False,
         concurrency_limit: int | None = None,
+        regions: list[str] | tuple[str, ...] | None = None,
     ) -> list["BeamSearchOutput"]:
         """Run Beam Search through the new EngineCore-owned V1 pipeline."""
         from vllm_gr.config import BeamExecutionMode
@@ -176,6 +177,7 @@ class GRLLM(LLM):
             lora_request=lora_request,
             use_tqdm=use_tqdm,
             concurrency_limit=concurrency_limit,
+            regions=regions,
         )
         return cast(
             list["BeamSearchOutput"],

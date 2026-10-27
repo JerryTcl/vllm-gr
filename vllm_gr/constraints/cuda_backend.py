@@ -34,6 +34,7 @@ class CUDAConstraintBackend:
 
     __slots__ = (
         "_first_token_ids",
+        "_first_token_offsets",
         "_info",
         "_prefix1_offsets",
         "_prefix1_pair_keys",
@@ -41,6 +42,8 @@ class CUDAConstraintBackend:
         "_prefix2_value_offsets",
         "_prefix2_values",
         "_state",
+        "_region_names",
+        "_max_first_degree",
         "vocab_slice",
     )
 
@@ -55,19 +58,25 @@ class CUDAConstraintBackend:
         prefix2_values: torch.Tensor,
         info: ConstraintBackendInfo,
         vocab_slice: tuple[int, int] | None = None,
+        first_token_offsets: torch.Tensor | None = None,
+        region_names: tuple[str, ...] = (),
+        max_first_degree: int = 0,
     ) -> None:
         validate_cuda_sort_capacity(
-            int(first_token_ids.numel()),
+            max_first_degree if first_token_offsets is not None else int(first_token_ids.numel()),
             info.table_metadata.max_prefix1_degree,
             info.table_metadata.max_prefix2_degree,
         )
         self._first_token_ids: torch.Tensor | None = first_token_ids
+        self._first_token_offsets: torch.Tensor | None = first_token_offsets
         self._prefix1_offsets: torch.Tensor | None = prefix1_offsets
         self._prefix1_values: torch.Tensor | None = prefix1_values
         self._prefix1_pair_keys: torch.Tensor | None = prefix1_pair_keys
         self._prefix2_value_offsets: torch.Tensor | None = prefix2_value_offsets
         self._prefix2_values: torch.Tensor | None = prefix2_values
         self._info = info
+        self._region_names = region_names
+        self._max_first_degree = max_first_degree
         self.vocab_slice = vocab_slice
         self._state = _BackendState.INITIALIZING
 
@@ -79,6 +88,22 @@ class CUDAConstraintBackend:
     def is_ready(self) -> bool:
         """Whether admission can use this backend without initialization work."""
         return self._state is _BackendState.READY
+
+    @property
+    def is_region_aware(self) -> bool:
+        return self._first_token_offsets is not None
+
+    @property
+    def region_names(self) -> tuple[str, ...]:
+        return self._region_names
+
+    def resolve_regions(self, names: tuple[str, ...]) -> tuple[int, ...]:
+        """Map request names; missing and unknown names retain -1 semantics."""
+
+        if not self.is_region_aware:
+            return (0,) * len(names)
+        lookup = {name: index for index, name in enumerate(self._region_names)}
+        return tuple(lookup.get(name, -1) if name else -1 for name in names)
 
     def _tables(self) -> tuple[torch.Tensor, ...]:
         tables = (
@@ -92,6 +117,11 @@ class CUDAConstraintBackend:
         if self._state is _BackendState.CLOSED or any(table is None for table in tables):
             raise RuntimeError("CUDA constraint backend is closed")
         return tuple(table for table in tables if table is not None)
+
+    def _region_table(self) -> torch.Tensor | None:
+        if self._state is _BackendState.CLOSED:
+            raise RuntimeError("CUDA constraint backend is closed")
+        return self._first_token_offsets
 
     def _invoke(
         self,
@@ -139,6 +169,19 @@ class CUDAConstraintBackend:
                         "all CUDA constraint tables must share logits.device; "
                         f"got table={table.device}, logits={logits.device}"
                     )
+        first_token_offsets = self._region_table()
+        if (
+            validate
+            and first_token_offsets is not None
+            and first_token_offsets.device != logits.device
+        ):
+            raise RuntimeError("Region Trie offsets must share logits.device")
+        if first_token_offsets is not None and metadata.region_ids is None:
+            raise ValueError("Region Trie selection requires one region_id per logits row")
+        if first_token_offsets is None and metadata.region_ids is not None:
+            raise ValueError("region_ids require a Region Trie backend")
+        if metadata.has_unconstrained_rows and metadata.region_ids is None:
+            raise ValueError("unconstrained Region Trie rows require region_ids")
         op_args = (
             logits,
             metadata.prefix_token_ids,
@@ -154,6 +197,11 @@ class CUDAConstraintBackend:
                 *op_args,
                 vocab_offset=vocab_offset,
                 table_vocab_size=table_vocab_size,
+                region_ids=metadata.region_ids,
+                first_token_offsets=first_token_offsets,
+                region_count=len(self._region_names) or 1,
+                max_first_degree=self._max_first_degree,
+                allow_unconstrained=metadata.has_unconstrained_rows,
             )
         else:
             token_ids, logprobs, valid_mask, valid_counts = outputs
@@ -178,6 +226,11 @@ class CUDAConstraintBackend:
                 valid_mask,
                 valid_counts,
                 **launch_kwargs,
+                region_ids=metadata.region_ids,
+                first_token_offsets=first_token_offsets,
+                region_count=len(self._region_names) or 1,
+                max_first_degree=self._max_first_degree,
+                allow_unconstrained=metadata.has_unconstrained_rows,
             )
         if not build_output:
             # Fixed-address (V1 Worker) path: the fused kernel now outputs
@@ -287,6 +340,7 @@ class CUDAConstraintBackend:
         if self._state is _BackendState.CLOSED:
             return
         self._first_token_ids = None
+        self._first_token_offsets = None
         self._prefix1_offsets = None
         self._prefix1_values = None
         self._prefix1_pair_keys = None

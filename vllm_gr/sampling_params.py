@@ -29,8 +29,17 @@ class BeamSearchParams(
     # generated token; beam_width remains the fixed storage capacity.
     dynamic_beam_widths: list[int] | None = None
     result_width: int | None = None
+    # Optional default Region Trie selector for online/single-region calls.
+    # Offline multi-prompt callers can supply one region per prompt directly.
+    region: str | None = None
 
     def __post_init__(self) -> None:
+        if self.region is not None and not isinstance(self.region, str):
+            raise VLLMValidationError(
+                "region must be a string or None",
+                parameter="region",
+                value=self.region,
+            )
         if (
             isinstance(self.beam_width, bool)
             or not isinstance(self.beam_width, int)

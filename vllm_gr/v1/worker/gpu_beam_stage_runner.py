@@ -453,6 +453,7 @@ class GPUBeamStageRunner:
         bindings: tuple[BeamRequestBinding, ...],
         backend: CUDAConstraintBackend | None,
         hooks: _StageExecutionHooks | None = None,
+        region_ids: tuple[int, ...] | None = None,
     ):
         expected = tuple(range(len(bindings)))
         if not bindings or (
@@ -539,8 +540,43 @@ class GPUBeamStageRunner:
         self.scores = w.topk_scores[:batch_size].reshape(rows, beam.state.beam_width)
         self.valid = w.topk_valid_mask[:batch_size].reshape(rows, beam.state.beam_width)
         self.counts = w.topk_valid_counts[:batch_size].reshape(rows)
+        self.region_ids_by_width: dict[int, torch.Tensor] = {}
+        self.has_unconstrained_regions = False
+        self.configure_regions(region_ids)
         context._gr_execution_owner = self
         beam.workspace.execution_owner = self
+
+    def configure_regions(self, region_ids: tuple[int, ...] | None) -> None:
+        """Populate fixed per-width device rows for one immutable batch."""
+
+        if self.backend is None or not self.backend.is_region_aware:
+            self.region_ids_by_width.clear()
+            self.has_unconstrained_regions = False
+            return
+        if region_ids is None or len(region_ids) != len(self.bindings):
+            raise ValueError("Region Trie requires one resolved region ID per request")
+        widths = {1, self.beam.state.beam_width}
+        dynamic_widths = self.beam.layout.dynamic_beam_widths
+        if dynamic_widths is not None:
+            widths.update(dynamic_widths)
+        device = self.beam.state.device
+        for width in widths:
+            values = tuple(region_id for region_id in region_ids for _ in range(width))
+            source = torch.tensor(values, dtype=torch.int32, device=device)
+            target = self.region_ids_by_width.get(width)
+            if target is None or target.numel() != source.numel():
+                self.region_ids_by_width[width] = source
+            else:
+                target.copy_(source)
+        self.has_unconstrained_regions = any(region_id < 0 for region_id in region_ids)
+
+    def _stage_region_ids(self, layout: BeamBatchExecutionView) -> torch.Tensor | None:
+        if self.backend is None or not self.backend.is_region_aware:
+            return None
+        try:
+            return self.region_ids_by_width[layout.input_width]
+        except KeyError as exc:
+            raise RuntimeError("Region Trie workspace does not cover this Beam width") from exc
 
     def admit(self, scheduler_output: Any) -> BeamDispatchExecution:
         if self.closed:
@@ -786,6 +822,8 @@ class GPUBeamStageRunner:
                             self.temperatures[:rows],
                             0,
                             layout.candidate_top_k,
+                            region_ids=self._stage_region_ids(layout),
+                            has_unconstrained_rows=self.has_unconstrained_regions,
                         ),
                         out_token_ids=candidates[0],
                         out_logprobs=candidates[1],
@@ -1132,6 +1170,12 @@ def get_stage_runner(
         )
     )
     view = BeamBatchExecutionView.from_stage_metadata(m)
+    resolved_region_ids = None
+    if isinstance(backend, CUDAConstraintBackend) and backend.is_region_aware:
+        if m.session_init is None:
+            raise ValueError("Region Trie requires the initial immutable batch request")
+        request_regions = tuple(item.region for item in m.session_init.items)
+        resolved_region_ids = backend.resolve_regions(request_regions)
     context = getattr(worker, "_beam_context", None)
     if context is None:
         context = _create_beam_context(worker, cfg, max_batch=max(SUPPORTED_BATCH_SIZES))
@@ -1256,12 +1300,20 @@ def get_stage_runner(
         adapter.execution_error = None
         adapter.prepared = None
         adapter.constraint_steps = beam.state.num_generated_tokens[: view.batch_size]
+        adapter.configure_regions(resolved_region_ids)
         context._gr_execution_owner = adapter
         workspace.execution_owner = adapter
     else:
         hooks = hooks_type(worker)
         hooks.prepare_new_adapter(view)
-        adapter = GPUBeamStageRunner(worker, beam, binding_tuple, backend, hooks=hooks)
+        adapter = GPUBeamStageRunner(
+            worker,
+            beam,
+            binding_tuple,
+            backend,
+            hooks=hooks,
+            region_ids=resolved_region_ids,
+        )
     if dynamic_requested:
         if adapter.dynamic is None:
             adapter.dynamic = GPUDynamicBeam(adapter)

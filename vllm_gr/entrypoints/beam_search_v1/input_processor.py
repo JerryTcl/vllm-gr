@@ -165,6 +165,7 @@ def _create_batch_request(
     engine_requests: tuple[EngineCoreRequest, ...],
     params: Any,
     vllm_config: Any,
+    regions: tuple[str, ...],
 ) -> BeamBatchRequest:
     if not engine_requests or engine_requests[0].request_id != session_id:
         raise BeamSearchRequestError(
@@ -228,7 +229,7 @@ def _create_batch_request(
         protocol_version=BEAM_BATCH_PROTOCOL_VERSION,
         batch_id=session_id,
         items=tuple(
-            BeamBatchItem(item_index=index, request=request)
+            BeamBatchItem(item_index=index, request=request, region=regions[index])
             for index, request in enumerate(engine_requests)
         ),
         beam_params=batch_params,
@@ -236,6 +237,20 @@ def _create_batch_request(
     )
     _validate_request(request, vllm_config)
     return request
+
+
+def _resolve_regions(call: OfflineBeamSearchRequest | OnlineBeamSearchRequest) -> tuple[str, ...]:
+    """Return one immutable region name per prompt; empty means unconstrained."""
+
+    values = call.regions
+    if values is None:
+        default = getattr(call.params, "region", None) or ""
+        return (default,) * len(call.prompts)
+    if not isinstance(values, (list, tuple)) or len(values) != len(call.prompts):
+        raise BeamSearchRequestError("regions must contain one string per prompt")
+    if any(not isinstance(value, str) for value in values):
+        raise BeamSearchRequestError("regions must contain only strings")
+    return tuple(values)
 
 
 class BeamSearchInputProcessor:
@@ -277,6 +292,7 @@ class BeamSearchInputProcessor:
             engine_requests=tuple(engine_requests),
             params=call.params,
             vllm_config=self.engine.vllm_config,
+            regions=_resolve_regions(call),
         )
         self.boundary_token_ids = (begin_token_id, end_token_id)
         return request
@@ -326,6 +342,7 @@ class BeamSearchInputProcessor:
             engine_requests=tuple(engine_requests),
             params=call.params,
             vllm_config=self.engine.vllm_config,
+            regions=_resolve_regions(call),
         )
         self.boundary_token_ids = (begin_token_id, end_token_id)
         return request

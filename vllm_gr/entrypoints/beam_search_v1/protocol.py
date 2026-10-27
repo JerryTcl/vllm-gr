@@ -24,6 +24,7 @@ class OfflineBeamSearchRequest:
     lora_request: Any = None
     use_tqdm: bool = False
     concurrency_limit: int | None = None
+    regions: tuple[str, ...] | list[str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,11 +43,14 @@ class OnlineBeamSearchRequest:
     trace_headers: Any = None
     priority: int = 0
     data_parallel_rank: int | None = None
+    regions: tuple[str, ...] | list[str] | None = None
 
     def __post_init__(self) -> None:
         # The field is a sequence on the wire; pinning the concrete type here
         # keeps a caller's list from being mutated under a running session.
         object.__setattr__(self, "prompts", tuple(self.prompts))
+        if self.regions is not None:
+            object.__setattr__(self, "regions", tuple(self.regions))
 
 
 @dataclass(slots=True)

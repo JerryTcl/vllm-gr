@@ -45,6 +45,7 @@ class BeamBatchItem(
 ):  # type: ignore[call-arg]
     item_index: int
     request: EngineCoreRequest
+    region: str = ""
 
 
 class BeamBatchParams(
@@ -357,6 +358,8 @@ def validate_beam_batch_request(request: BeamBatchRequest) -> None:
                 "items must be ordered with contiguous item_index values from zero; "
                 f"expected {expected_index}, got {item.item_index!r}"
             )
+        if not isinstance(item.region, str):
+            _fail(f"items[{expected_index}].region must be a string")
         if not isinstance(item.request, EngineCoreRequest):
             _fail("item.request must be an EngineCoreRequest")
         request_id = _non_empty_string(

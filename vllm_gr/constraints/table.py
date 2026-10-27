@@ -39,6 +39,10 @@ class ConstraintTableMetadata:
     max_prefix1_degree: int
     max_prefix2_degree: int
     total_bytes: int
+    # Empty for the canonical single-table ABI. Region Trie backends expose
+    # their request-facing names here without changing the shared BackendInfo
+    # contract.
+    regions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

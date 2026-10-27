@@ -61,12 +61,15 @@ def validate_cuda_sort_capacity(
         "prefix_stride",
         "temperature_count",
         "top_k",
+        "region_count",
     ]
 )
 def _fused_topk_kernel(
     logits,
     prefixes,
+    region_ids,
     first_ids,
+    first_offsets,
     prefix1_offsets,
     prefix1_values,
     pair_keys,
@@ -92,8 +95,11 @@ def _fused_topk_kernel(
     prefix_stride,
     temperature_count,
     top_k,
+    region_count,
     WRITE_WIRE_LOGPROBS: tl.constexpr,
     PACK_PREFILL_RESULT: tl.constexpr,
+    REGION_AWARE: tl.constexpr,
+    ALLOW_UNCONSTRAINED: tl.constexpr,
     step: tl.constexpr,
     device_step,
     DEVICE_STEP: tl.constexpr,
@@ -106,20 +112,34 @@ def _fused_topk_kernel(
     offsets = tl.arange(0, BLOCK)
     begin = tl.full((), 0, tl.int64)
     degree = tl.cast(first_count, tl.int64)
+    region = tl.full((), 0, tl.int64)
+    region_valid = True
+    if REGION_AWARE:
+        region = tl.load(region_ids + row).to(tl.int64)
+        region_valid = (region >= 0) & (region < region_count)
+        safe_region = tl.where(region_valid, region, 0)
+        begin = tl.load(first_offsets + safe_region).to(tl.int64)
+        end = tl.load(first_offsets + safe_region + 1).to(tl.int64)
+        degree = tl.where(region_valid, end - begin, 0)
     if step == 1:
         first = tl.load(prefixes + row * prefix_stride).to(tl.int64)
-        prefix_valid = (first >= 0) & (first < table_vocab_size)
+        prefix_valid = region_valid & (first >= 0) & (first < table_vocab_size)
         safe_first = tl.where(prefix_valid, first, 0)
-        begin = tl.load(prefix1_offsets + safe_first).to(tl.int64)
-        end = tl.load(prefix1_offsets + safe_first + 1).to(tl.int64)
+        bucket = safe_first
+        if REGION_AWARE:
+            bucket = tl.where(prefix_valid, region * (table_vocab_size + 1) + safe_first, 0)
+        begin = tl.load(prefix1_offsets + bucket).to(tl.int64)
+        end = tl.load(prefix1_offsets + bucket + 1).to(tl.int64)
         degree = tl.where(prefix_valid, end - begin, 0)
     elif step == 2:
         first = tl.load(prefixes + row * prefix_stride).to(tl.int64)
         second = tl.load(prefixes + row * prefix_stride + 1).to(tl.int64)
-        prefix_valid = (
+        prefix_valid = region_valid & (
             (first >= 0) & (first < table_vocab_size) & (second >= 0) & (second < table_vocab_size)
         )
         query = first * table_vocab_size + second
+        if REGION_AWARE:
+            query += region * table_vocab_size * table_vocab_size
         low = 0
         high = pair_count
         for _ in tl.static_range(0, 32):
@@ -142,13 +162,22 @@ def _fused_topk_kernel(
         end = tl.load(prefix2_offsets + safe_pos + 1, mask=found, other=0).to(tl.int64)
         degree = tl.where(found, end - begin, 0)
 
+    unconstrained_row = False
+    if REGION_AWARE and ALLOW_UNCONSTRAINED:
+        unconstrained_row = ~region_valid
+        degree = tl.where(unconstrained_row, logits_vocab_size, degree)
     candidate_mask = offsets < degree
+    table_candidate_mask = candidate_mask
+    if REGION_AWARE and ALLOW_UNCONSTRAINED:
+        table_candidate_mask &= ~unconstrained_row
     if step == 0:
-        token = tl.load(first_ids + offsets, mask=candidate_mask, other=0)
+        token = tl.load(first_ids + begin + offsets, mask=table_candidate_mask, other=0)
     elif step == 1:
-        token = tl.load(prefix1_values + begin + offsets, mask=candidate_mask, other=0)
+        token = tl.load(prefix1_values + begin + offsets, mask=table_candidate_mask, other=0)
     else:
-        token = tl.load(prefix2_values + begin + offsets, mask=candidate_mask, other=0)
+        token = tl.load(prefix2_values + begin + offsets, mask=table_candidate_mask, other=0)
+    if REGION_AWARE and ALLOW_UNCONSTRAINED:
+        token = tl.where(unconstrained_row, offsets + vocab_offset, token)
     local_token = token.to(tl.int64) - vocab_offset
     token_in_window = (local_token >= 0) & (local_token < logits_vocab_size)
     candidate_mask = candidate_mask & token_in_window
@@ -250,24 +279,39 @@ def _fused_topk_kernel(
     valid_output = output_mask & (offsets < valid_degree)
     if step == 0:
         default_token = tl.load(first_ids, mask=first_count > 0, other=0)
+        selected_table_mask = valid_output
+        if REGION_AWARE and ALLOW_UNCONSTRAINED:
+            selected_table_mask &= ~unconstrained_row
         selected_tokens = tl.load(
-            first_ids + selected_offsets,
-            mask=valid_output,
+            first_ids + begin + selected_offsets,
+            mask=selected_table_mask,
             other=default_token,
         )
     elif step == 1:
         default_token = tl.load(prefix1_values, mask=prefix1_value_count > 0, other=0)
+        selected_table_mask = valid_output
+        if REGION_AWARE and ALLOW_UNCONSTRAINED:
+            selected_table_mask &= ~unconstrained_row
         selected_tokens = tl.load(
             prefix1_values + begin + selected_offsets,
-            mask=valid_output,
+            mask=selected_table_mask,
             other=default_token,
         )
     else:
         default_token = tl.load(prefix2_values, mask=prefix2_value_count > 0, other=0)
+        selected_table_mask = valid_output
+        if REGION_AWARE and ALLOW_UNCONSTRAINED:
+            selected_table_mask &= ~unconstrained_row
         selected_tokens = tl.load(
             prefix2_values + begin + selected_offsets,
-            mask=valid_output,
+            mask=selected_table_mask,
             other=default_token,
+        )
+    if REGION_AWARE and ALLOW_UNCONSTRAINED:
+        selected_tokens = tl.where(
+            unconstrained_row,
+            selected_offsets + vocab_offset,
+            selected_tokens,
         )
     output_offsets = row * top_k + offsets
     tl.store(output_ids + output_offsets, selected_tokens, mask=output_mask)
@@ -336,6 +380,11 @@ def _validate_inputs(
     max_prefix2_degree: int = 0,
     vocab_offset: int = 0,
     table_vocab_size: int | None = None,
+    region_ids: torch.Tensor | None = None,
+    first_token_offsets: torch.Tensor | None = None,
+    region_count: int = 1,
+    max_first_degree: int = 0,
+    allow_unconstrained: bool = False,
 ) -> tuple[int, int, torch.Tensor, int]:
     if logits.device.type != "cuda":
         raise ValueError(f"CUDA constrained Top-K requires CUDA logits, got {logits.device}")
@@ -392,18 +441,44 @@ def _validate_inputs(
         raise ValueError("sequence_group row count must match logits")
     flat_prefixes = sequence_group.view(prefix_rows, sequence_group.shape[-1])
 
+    region_aware = region_ids is not None or first_token_offsets is not None
+    if region_aware != (region_ids is not None and first_token_offsets is not None):
+        raise ValueError("region_ids and first_token_offsets must be provided together")
+    token_dtype = (torch.int16, torch.int32) if region_aware else torch.int32
+    pair_dtype = (torch.int32, torch.int64) if region_aware else torch.int64
     table_specs = (
         ("first_token_ids", first_token_ids, torch.int32),
         ("prefix1_offsets", prefix1_offsets, torch.int32),
-        ("prefix1_values", prefix1_values, torch.int32),
-        ("prefix1_pair_keys", prefix1_pair_keys, torch.int64),
+        ("prefix1_values", prefix1_values, token_dtype),
+        ("prefix1_pair_keys", prefix1_pair_keys, pair_dtype),
         ("prefix2_value_offsets", prefix2_value_offsets, torch.int32),
-        ("prefix2_values", prefix2_values, torch.int32),
+        ("prefix2_values", prefix2_values, token_dtype),
     )
     for name, tensor, dtype in table_specs:
         _require_cuda_contiguous(name, tensor, device=logits.device, dtype=dtype, ndim=1)
-    if prefix1_offsets.numel() != table_vocab_size + 1:
-        raise ValueError("prefix1_offsets must contain table_vocab_size + 1 entries")
+    expected_prefix1_offsets = table_vocab_size + 1
+    if region_aware:
+        if isinstance(region_count, bool) or not isinstance(region_count, int) or region_count < 1:
+            raise ValueError("region_count must be a positive integer")
+        _require_cuda_contiguous(
+            "region_ids", region_ids, device=logits.device, dtype=torch.int32, ndim=1
+        )
+        _require_cuda_contiguous(
+            "first_token_offsets",
+            first_token_offsets,
+            device=logits.device,
+            dtype=torch.int32,
+            ndim=1,
+        )
+        if region_ids.numel() != rows:
+            raise ValueError("region_ids must contain one value per logits row")
+        if first_token_offsets.numel() != region_count + 1:
+            raise ValueError("first_token_offsets must contain region_count + 1 entries")
+        expected_prefix1_offsets = region_count * (table_vocab_size + 1)
+    elif allow_unconstrained:
+        raise ValueError("allow_unconstrained requires a Region Trie")
+    if prefix1_offsets.numel() != expected_prefix1_offsets:
+        raise ValueError(f"prefix1_offsets must contain {expected_prefix1_offsets} entries")
     if prefix2_value_offsets.numel() != prefix1_pair_keys.numel() + 1:
         raise ValueError("prefix2_value_offsets must contain pair_count + 1 entries")
     _require_cuda_contiguous(
@@ -412,6 +487,7 @@ def _validate_inputs(
     if temperatures.numel() not in (1, rows):
         raise ValueError("temperatures must contain one value or one value per row")
     for name, degree in (
+        ("max_first_degree", max_first_degree),
         ("max_prefix1_degree", max_prefix1_degree),
         ("max_prefix2_degree", max_prefix2_degree),
     ):
@@ -420,7 +496,7 @@ def _validate_inputs(
         if degree < 0:
             raise ValueError(f"{name} must be non-negative")
     if current_step == 0:
-        candidate_count = first_token_ids.numel()
+        candidate_count = max_first_degree if region_aware else first_token_ids.numel()
     elif current_step == 1:
         if prefix1_values.numel() and max_prefix1_degree == 0:
             raise ValueError("max_prefix1_degree must be provided for CUDA step 1")
@@ -429,6 +505,8 @@ def _validate_inputs(
         if prefix2_values.numel() and max_prefix2_degree == 0:
             raise ValueError("max_prefix2_degree must be provided for CUDA step 2")
         candidate_count = max_prefix2_degree
+    if allow_unconstrained:
+        candidate_count = max(candidate_count, logits_vocab_size)
     width = max(top_k, candidate_count, 1)
     block = triton.next_power_of_2(width)
     if block > MAX_SORT_BLOCK:
@@ -479,7 +557,9 @@ def _validate_nonoverlapping_outputs(outputs: tuple[tuple[str, torch.Tensor], ..
 
 def _launch_rec_constrained_topk_cuda_out(
     logits: torch.Tensor,
+    region_ids: torch.Tensor | None,
     first_token_ids: torch.Tensor,
+    first_token_offsets: torch.Tensor | None,
     prefix1_offsets: torch.Tensor,
     prefix1_values: torch.Tensor,
     prefix1_pair_keys: torch.Tensor,
@@ -502,11 +582,16 @@ def _launch_rec_constrained_topk_cuda_out(
     block: int,
     flat_prefixes: torch.Tensor,
     table_vocab_size: int,
+    region_count: int = 1,
+    region_aware: bool = False,
+    allow_unconstrained: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     _fused_topk_kernel[(rows,)](
         logits,
         flat_prefixes,
+        region_ids if region_ids is not None else flat_prefixes,
         first_token_ids,
+        first_token_offsets if first_token_offsets is not None else prefix1_offsets,
         prefix1_offsets,
         prefix1_values,
         prefix1_pair_keys,
@@ -532,8 +617,11 @@ def _launch_rec_constrained_topk_cuda_out(
         prefix_stride=flat_prefixes.shape[1],
         temperature_count=temperatures.numel(),
         top_k=top_k,
+        region_count=region_count,
         WRITE_WIRE_LOGPROBS=out_wire_logprobs is not None,
         PACK_PREFILL_RESULT=(out_prefill_status is not None and out_prefill_payload is not None),
+        REGION_AWARE=region_aware,
+        ALLOW_UNCONSTRAINED=allow_unconstrained,
         step=current_step,
         device_step=device_step,
         DEVICE_STEP=device_step is not None,
@@ -565,6 +653,12 @@ def rec_constrained_topk_cuda_out(
     vocab_offset: int = 0,
     table_vocab_size: int | None = None,
     out_wire_logprobs: torch.Tensor | None = None,
+    *,
+    region_ids: torch.Tensor | None = None,
+    first_token_offsets: torch.Tensor | None = None,
+    region_count: int = 1,
+    max_first_degree: int = 0,
+    allow_unconstrained: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Write constrained Top-K results into caller-owned CUDA tensors."""
 
@@ -584,6 +678,11 @@ def rec_constrained_topk_cuda_out(
         max_prefix2_degree,
         vocab_offset,
         table_vocab_size,
+        region_ids,
+        first_token_offsets,
+        region_count,
+        max_first_degree,
+        allow_unconstrained,
     )
     _validate_outputs(
         logits,
@@ -618,7 +717,9 @@ def rec_constrained_topk_cuda_out(
     _validate_nonoverlapping_outputs(tuple(writable_outputs))
     return _launch_rec_constrained_topk_cuda_out(
         logits,
+        region_ids,
         first_token_ids,
+        first_token_offsets,
         prefix1_offsets,
         prefix1_values,
         prefix1_pair_keys,
@@ -637,6 +738,9 @@ def rec_constrained_topk_cuda_out(
         block=block,
         flat_prefixes=flat_prefixes,
         table_vocab_size=resolved_table_vocab_size,
+        region_count=region_count,
+        region_aware=region_ids is not None,
+        allow_unconstrained=allow_unconstrained,
     )
 
 
@@ -664,22 +768,36 @@ def _rec_constrained_topk_cuda_out_unchecked(
     out_prefill_status: torch.Tensor | None = None,
     out_prefill_payload: torch.Tensor | None = None,
     device_step: torch.Tensor | None = None,
+    *,
+    region_ids: torch.Tensor | None = None,
+    first_token_offsets: torch.Tensor | None = None,
+    region_count: int = 1,
+    max_first_degree: int = 0,
+    allow_unconstrained: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Launch on startup-validated CUDA prefill tensors (Worker-internal)."""
 
     rows = int(logits.shape[0])
     candidate_count = (
-        int(first_token_ids.numel())
+        (int(max_first_degree) if region_ids is not None else int(first_token_ids.numel()))
         if current_step == 0
         else (int(max_prefix1_degree) if current_step == 1 else int(max_prefix2_degree))
     )
     if device_step is not None:
-        candidate_count = max(first_token_ids.numel(), max_prefix1_degree, max_prefix2_degree)
+        candidate_count = max(
+            max_first_degree if region_ids is not None else first_token_ids.numel(),
+            max_prefix1_degree,
+            max_prefix2_degree,
+        )
+    if allow_unconstrained:
+        candidate_count = max(candidate_count, logits.shape[1])
     block = triton.next_power_of_2(max(top_k, candidate_count, 1))
     flat_prefixes = sequence_group.view(rows, sequence_group.shape[-1])
     return _launch_rec_constrained_topk_cuda_out(
         logits,
+        region_ids,
         first_token_ids,
+        first_token_offsets,
         prefix1_offsets,
         prefix1_values,
         prefix1_pair_keys,
@@ -701,6 +819,9 @@ def _rec_constrained_topk_cuda_out_unchecked(
         block=block,
         flat_prefixes=flat_prefixes,
         table_vocab_size=table_vocab_size,
+        region_count=region_count,
+        region_aware=region_ids is not None,
+        allow_unconstrained=allow_unconstrained,
     )
 
 
@@ -720,6 +841,12 @@ def rec_constrained_topk_cuda(
     max_prefix2_degree: int = 0,
     vocab_offset: int = 0,
     table_vocab_size: int | None = None,
+    *,
+    region_ids: torch.Tensor | None = None,
+    first_token_offsets: torch.Tensor | None = None,
+    region_count: int = 1,
+    max_first_degree: int = 0,
+    allow_unconstrained: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Allocate and return int32 tokens, fp32 logprobs, mask, and counts."""
 
@@ -739,6 +866,11 @@ def rec_constrained_topk_cuda(
         max_prefix2_degree,
         vocab_offset,
         table_vocab_size,
+        region_ids,
+        first_token_offsets,
+        region_count,
+        max_first_degree,
+        allow_unconstrained,
     )
     token_ids = torch.empty((rows, top_k), dtype=torch.int32, device=logits.device)
     logprobs = torch.empty((rows, top_k), dtype=torch.float32, device=logits.device)
@@ -764,6 +896,11 @@ def rec_constrained_topk_cuda(
         valid_counts,
         vocab_offset,
         table_vocab_size,
+        region_ids=region_ids,
+        first_token_offsets=first_token_offsets,
+        region_count=region_count,
+        max_first_degree=max_first_degree,
+        allow_unconstrained=allow_unconstrained,
     )
 
 

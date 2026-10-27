@@ -15,7 +15,11 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
-from vllm_gr.config.models import ConstraintTableBackendEnum, ConstraintTableConfig
+from vllm_gr.config.models import (
+    REGION_TRIE_FORMAT,
+    ConstraintTableBackendEnum,
+    ConstraintTableConfig,
+)
 from vllm_gr.constraints.artifact import load_constraint_table_artifact
 from vllm_gr.constraints.backend import (
     INVALID_LOGIT,
@@ -27,6 +31,11 @@ from vllm_gr.constraints.cpu_backend import CPUConstraintBackend
 from vllm_gr.constraints.cuda_backend import CUDAConstraintBackend
 from vllm_gr.constraints.npu_backend import NPUConstraintBackend
 from vllm_gr.constraints.npu_stage_vocab import NPUStageVocab, build_npu_stage_vocab
+from vllm_gr.constraints.region_table import (
+    REGION_TRIE_TENSOR_NAMES,
+    RegionConstraintTable,
+    load_region_constraint_table,
+)
 from vllm_gr.constraints.table import (
     CONSTRAINT_TABLE_TENSOR_NAMES,
     ConstraintTable,
@@ -51,6 +60,7 @@ class _ReadyCase:
     candidate_count: int
     first_tokens: tuple[int, ...]
     last_tokens: tuple[int, ...]
+    region_id: int = 0
 
 
 def _validate_loader_inputs(
@@ -71,7 +81,7 @@ def _validate_loader_inputs(
 
 
 def _backend_info(
-    table: ConstraintTable,
+    table: ConstraintTable | RegionConstraintTable,
     *,
     backend: ConstraintTableBackendEnum,
     max_top_k: int,
@@ -129,6 +139,58 @@ def _readiness_cases(table: ConstraintTable, top_k: int) -> tuple[_ReadyCase, ..
         ready_case(0, (0, 0, 0), table.first_token_ids),
         ready_case(1, (a, 0, 0), table.prefix1_values[begin1:end1]),
         ready_case(2, (a, b, 0), table.prefix2_values[begin2:end2]),
+    )
+
+
+def _region_readiness_cases(table: RegionConstraintTable, top_k: int) -> tuple[_ReadyCase, ...]:
+    """Select one real path from a non-empty region for device readiness."""
+
+    region_id = next(
+        (
+            index
+            for index in range(table.region_count)
+            if table.first_token_offsets[index] < table.first_token_offsets[index + 1]
+        ),
+        -1,
+    )
+    if region_id < 0:
+        raise ValueError("Region Trie has no first-token candidates")
+    first_begin = int(table.first_token_offsets[region_id])
+    first_end = int(table.first_token_offsets[region_id + 1])
+    first_values = table.first_token_ids[first_begin:first_end]
+    a = int(first_values[0])
+    begin1 = int(table.offsets_SB[region_id, a])
+    end1 = int(table.offsets_SB[region_id, a + 1])
+    second_values = table.flat_SB[begin1:end1]
+    if second_values.size == 0:
+        raise ValueError("Region Trie first path has no second-token candidates")
+    b = int(second_values[0])
+    key = region_id * table.metadata.vocab_size**2 + a * table.metadata.vocab_size + b
+    pair_index = int(np.searchsorted(table.pair_keys, key))
+    if pair_index >= table.pair_keys.size or int(table.pair_keys[pair_index]) != key:
+        raise ValueError("Region Trie is missing its first real pair key")
+    begin2 = int(table.offsets_SC[pair_index])
+    end2 = int(table.offsets_SC[pair_index + 1])
+    third_values = table.flat_SC[begin2:end2]
+    if third_values.size == 0:
+        raise ValueError("Region Trie first pair has no third-token candidates")
+
+    def ready_case(step: int, prefix: tuple[int, int, int], values: NDArray[Any]) -> _ReadyCase:
+        count = int(values.size)
+        selected = min(count, top_k)
+        return _ReadyCase(
+            current_step=step,
+            prefix=prefix,
+            candidate_count=count,
+            first_tokens=tuple(int(value) for value in values[:selected]),
+            last_tokens=tuple(int(value) for value in values[count - selected :]),
+            region_id=region_id,
+        )
+
+    return (
+        ready_case(0, (0, 0, 0), first_values),
+        ready_case(1, (a, 0, 0), second_values),
+        ready_case(2, (a, b, 0), third_values),
     )
 
 
@@ -273,6 +335,56 @@ def _upload_cuda_backend(
             prefix2_values=device_tables["prefix2_values"],
             info=info,
             vocab_slice=(offset, end - offset),
+        )
+        return backend, cases
+    except BaseException:
+        if backend is not None:
+            backend.close()
+        device_tables.clear()
+        raise
+
+
+def _upload_cuda_region_backend(
+    table: RegionConstraintTable,
+    *,
+    device: torch.device,
+    max_top_k: int,
+    max_rows: int,
+) -> tuple[CUDAConstraintBackend, tuple[_ReadyCase, ...]]:
+    validate_cuda_sort_capacity(
+        max(table.max_first_degree, table.metadata.vocab_size),
+        table.metadata.max_prefix1_degree,
+        table.metadata.max_prefix2_degree,
+    )
+    cases = _region_readiness_cases(table, max_top_k)
+    device_tables: dict[str, torch.Tensor] = {}
+    backend: CUDAConstraintBackend | None = None
+    try:
+        for name in REGION_TRIE_TENSOR_NAMES:
+            value = getattr(table, name)
+            if name == "offsets_SB":
+                value = value.reshape(-1)
+            device_tables[name] = _upload_table_tensor(value, device)
+        _synchronize_current_cuda_stream(device)
+        info = _backend_info(
+            table,
+            backend=ConstraintTableBackendEnum.CUDA,
+            max_top_k=max_top_k,
+            max_rows=max_rows,
+            host_memory_bytes=0,
+            device_memory_bytes=_unique_storage_bytes(device_tables),
+        )
+        backend = CUDAConstraintBackend(
+            first_token_ids=device_tables["first_token_ids"],
+            prefix1_offsets=device_tables["offsets_SB"],
+            prefix1_values=device_tables["flat_SB"],
+            prefix1_pair_keys=device_tables["pair_keys"],
+            prefix2_value_offsets=device_tables["offsets_SC"],
+            prefix2_values=device_tables["flat_SC"],
+            first_token_offsets=device_tables["first_token_offsets"],
+            region_names=table.regions,
+            max_first_degree=table.max_first_degree,
+            info=info,
         )
         return backend, cases
     except BaseException:
@@ -458,6 +570,11 @@ def _run_device_readiness(
                 temperatures=temperatures,
                 current_step=case.current_step,
                 top_k=top_k,
+                region_ids=(
+                    torch.full((rows,), case.region_id, dtype=torch.int32, device=device)
+                    if isinstance(backend, CUDAConstraintBackend) and backend.is_region_aware
+                    else None
+                ),
             ),
         )
         synchronize(device)
@@ -548,6 +665,44 @@ def load_constraint_backend(
     )
     if config.path is None or config.artifact_digest is None or config.tokenizer_digest is None:
         raise ValueError("enabled constraint table configuration is incomplete")
+
+    if config.format == REGION_TRIE_FORMAT:
+        if config.backend is not ConstraintTableBackendEnum.CUDA:
+            raise ValueError("region_trie_v1 currently requires the CUDA backend")
+        if config.max_top_k > MAX_TOP_K:
+            raise ValueError(
+                f"CUDA constraint max_top_k must be <= {MAX_TOP_K}, got {config.max_top_k}"
+            )
+        if dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(f"CUDA constraint logits must be fp16/bf16, got {dtype}")
+        if device.type != "cuda":
+            raise RuntimeError(f"CUDA constraint backend requires a CUDA device, got {device}")
+        region_table = load_region_constraint_table(
+            config.path,
+            expected_digest=config.artifact_digest,
+            expected_tokenizer_digest=config.tokenizer_digest,
+            expected_vocab_size=vocab_size,
+        )
+        backend, cases = _upload_cuda_region_backend(
+            region_table,
+            device=device,
+            max_top_k=config.max_top_k,
+            max_rows=max_rows,
+        )
+        del region_table
+        try:
+            _run_cuda_readiness(
+                backend,
+                cases=cases,
+                device=device,
+                dtype=dtype,
+                max_rows=max_rows,
+            )
+            backend._mark_ready()  # noqa: SLF001
+            return backend
+        except BaseException:
+            backend.close()
+            raise
 
     op: NPUConstraintOp | None = None
     if config.backend is ConstraintTableBackendEnum.CUDA:
