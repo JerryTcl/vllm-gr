@@ -18,7 +18,11 @@ from typing import Annotated, Literal, NoReturn, TypeGuard
 import msgspec
 from vllm.v1.engine import EngineCoreRequest
 
-from vllm_gr.config import MAX_BEAM_WIDTH, SUPPORTED_BEAM_BATCH_SIZES
+from vllm_gr.config import (
+    MAX_BEAM_WIDTH,
+    MAX_EXPANSION_WIDTH,
+    SUPPORTED_BEAM_BATCH_SIZES,
+)
 
 BEAM_BATCH_PROTOCOL_VERSION = 1
 DEFAULT_CONSTRAINT_RESOURCE_ID = "default"
@@ -292,8 +296,11 @@ def _validate_beam_params(params: BeamBatchParams) -> None:
             expansion_width = _positive_int(
                 f"beam_params.expansion_widths[{index}]", expansion_width
             )
-            if expansion_width > MAX_BEAM_WIDTH:
-                _fail(f"beam_params.expansion_widths entries must be <= {MAX_BEAM_WIDTH}")
+            if expansion_width > MAX_EXPANSION_WIDTH:
+                _fail(
+                    "beam_params.expansion_widths entries must be "
+                    f"<= {MAX_EXPANSION_WIDTH}"
+                )
             if output_width > input_width * expansion_width:
                 _fail("each retained width must not exceed input_width * expansion_width")
             input_width = output_width

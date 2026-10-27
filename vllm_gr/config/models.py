@@ -9,10 +9,13 @@ from enum import Enum
 GR_CONFIG_SCHEMA_VERSION = 1
 CONSTRAINT_TABLE_FORMAT = "constraint_table_v1"
 CONSTRAINT_TABLE_MAX_DECODE_STEPS = 3
-# Temporary global Beam width ceiling. Keep every configuration, request,
-# runtime contract, and fused kernel on this single limit until wider kernels
-# are implemented and qualified end to end.
+# Temporary retained Beam width ceiling. Keep every retained-width
+# configuration, runtime contract, and fused kernel on this limit until wider
+# kernels are implemented and qualified end to end.
 MAX_BEAM_WIDTH = 256
+# Per-parent candidate ceiling. Keep this independent from retained Beam width
+# so wider Beam storage does not implicitly enable unqualified Top-K shapes.
+MAX_EXPANSION_WIDTH = 256
 # Conservative startup resource policy, including the implicit max-width bank.
 # This bounds retained width count; it is not a guarantee that graphs fit memory.
 MAX_NPU_BEAM_GRAPH_WIDTHS = 8

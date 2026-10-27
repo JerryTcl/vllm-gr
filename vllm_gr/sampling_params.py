@@ -4,7 +4,7 @@
 from vllm.exceptions import VLLMValidationError
 from vllm.sampling_params import BeamSearchParams as BaseBeamSearchParams
 
-from vllm_gr.config import MAX_BEAM_WIDTH
+from vllm_gr.config import MAX_BEAM_WIDTH, MAX_EXPANSION_WIDTH
 
 
 class BeamSearchParams(
@@ -75,13 +75,13 @@ class BeamSearchParams(
                 or decode_steps not in (1, 2, 3)
                 or len(expansion_widths) != decode_steps
                 or any(
-                    type(factor) is not int or not 1 <= factor <= MAX_BEAM_WIDTH
+                    type(factor) is not int or not 1 <= factor <= MAX_EXPANSION_WIDTH
                     for factor in expansion_widths
                 )
             ):
                 raise VLLMValidationError(
                     "expansion_widths must contain one integer in "
-                    f"[1, {MAX_BEAM_WIDTH}] per effective generation step",
+                    f"[1, {MAX_EXPANSION_WIDTH}] per effective generation step",
                     parameter="expansion_widths",
                     value=expansion_widths,
                 )
