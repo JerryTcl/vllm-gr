@@ -20,7 +20,7 @@ from vllm.v1.engine import EngineCoreRequest
 
 from vllm_gr.config import (
     MAX_BEAM_WIDTH,
-    MAX_EXPANSION_WIDTH,
+    MAX_PER_PARENT_BEAM_WIDTH,
     SUPPORTED_BEAM_BATCH_SIZES,
 )
 
@@ -71,7 +71,7 @@ class BeamBatchParams(
     # arrays still include both fields, so old strict decoders reject them even
     # for fixed-width calls. All participating processes need the same schema.
     dynamic_beam_widths: tuple[int, ...] | None = None
-    expansion_widths: tuple[int, ...] | None = None
+    per_parent_beam_widths: tuple[int, ...] | None = None
 
 
 class BeamOutputOptions(
@@ -280,32 +280,32 @@ def _validate_beam_params(params: BeamBatchParams) -> None:
             normalized = _positive_int(f"beam_params.dynamic_beam_widths[{index}]", width)
             if normalized > beam_width:
                 _fail("beam_params.dynamic_beam_widths entries must not exceed beam_width")
-    expansion_widths = params.expansion_widths
-    if expansion_widths is not None:
+    per_parent_beam_widths = params.per_parent_beam_widths
+    if per_parent_beam_widths is not None:
         if (
             params.max_tokens not in (1, 2, 3)
-            or not isinstance(expansion_widths, tuple)
-            or len(expansion_widths) != params.max_tokens
+            or not isinstance(per_parent_beam_widths, tuple)
+            or len(per_parent_beam_widths) != params.max_tokens
         ):
-            _fail("beam_params.expansion_widths must contain one immutable value per step")
+            _fail("beam_params.per_parent_beam_widths must contain one immutable value per step")
         retained_widths = widths or (beam_width,) * params.max_tokens
-        for index, expansion_width in enumerate(expansion_widths):
-            expansion_width = _positive_int(
-                f"beam_params.expansion_widths[{index}]", expansion_width
+        for index, per_parent_beam_width in enumerate(per_parent_beam_widths):
+            per_parent_beam_width = _positive_int(
+                f"beam_params.per_parent_beam_widths[{index}]", per_parent_beam_width
             )
-            if expansion_width > MAX_EXPANSION_WIDTH:
+            if per_parent_beam_width > MAX_PER_PARENT_BEAM_WIDTH:
                 _fail(
-                    "beam_params.expansion_widths entries must be "
-                    f"<= {MAX_EXPANSION_WIDTH}"
+                    "beam_params.per_parent_beam_widths entries must be "
+                    f"<= {MAX_PER_PARENT_BEAM_WIDTH}"
                 )
-        if expansion_widths[0] != retained_widths[0]:
-            _fail("the first expansion width must equal the first retained width")
+        if per_parent_beam_widths[0] != retained_widths[0]:
+            _fail("the first per-parent beam width must equal the first retained width")
         input_width = retained_widths[0]
-        for expansion_width, output_width in zip(
-            expansion_widths[1:], retained_widths[1:]
+        for per_parent_beam_width, output_width in zip(
+            per_parent_beam_widths[1:], retained_widths[1:]
         ):
-            if output_width > input_width * expansion_width:
-                _fail("each retained width must not exceed input_width * expansion_width")
+            if output_width > input_width * per_parent_beam_width:
+                _fail("each retained width must not exceed input_width * per_parent_beam_width")
             input_width = output_width
     if (
         isinstance(params.temperature, bool)

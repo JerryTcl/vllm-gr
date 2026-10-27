@@ -30,12 +30,12 @@ def test_dynamic_route_depends_only_on_search_geometry(widths, expected):
     )
 
 
-def test_expansion_widths_uses_dynamic_selection_path():
+def test_per_parent_beam_widths_uses_dynamic_selection_path():
     assert uses_dynamic_beam(
         SimpleNamespace(
             beam_width=128,
             dynamic_beam_widths=(128, 128, 128),
-            expansion_widths=(64, 32, 16),
+            per_parent_beam_widths=(64, 32, 16),
         )
     )
 

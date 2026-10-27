@@ -68,37 +68,37 @@ def test_invalid_stage_or_result_width_is_rejected(widths: Any, result_width: An
         )
 
 
-def test_expansion_widths_is_validated_against_retained_widths() -> None:
+def test_per_parent_beam_widths_is_validated_against_retained_widths() -> None:
     params = BeamSearchParams(
         beam_width=4,
         max_tokens=3,
         dynamic_beam_widths=[2, 4, 4],
-        expansion_widths=[2, 2, 1],
+        per_parent_beam_widths=[2, 2, 1],
         result_width=2,
     )
-    assert params.expansion_widths == [2, 2, 1]
+    assert params.per_parent_beam_widths == [2, 2, 1]
 
-    with pytest.raises(VLLMValidationError, match="first expansion width"):
+    with pytest.raises(VLLMValidationError, match="first per-parent beam width"):
         BeamSearchParams(
             beam_width=4,
             max_tokens=3,
             dynamic_beam_widths=[2, 4, 4],
-            expansion_widths=[1, 2, 1],
+            per_parent_beam_widths=[1, 2, 1],
         )
 
-    with pytest.raises(VLLMValidationError, match=r"input_width \* expansion_width"):
+    with pytest.raises(VLLMValidationError, match=r"input_width \* per_parent_beam_width"):
         BeamSearchParams(
             beam_width=4,
             max_tokens=3,
             dynamic_beam_widths=[2, 4, 4],
-            expansion_widths=[2, 1, 1],
+            per_parent_beam_widths=[2, 1, 1],
         )
 
-    with pytest.raises(VLLMValidationError, match="expansion_widths"):
+    with pytest.raises(VLLMValidationError, match="per_parent_beam_widths"):
         BeamSearchParams(
             beam_width=1,
             max_tokens=4,
-            expansion_widths=[1, 1, 1, 1],
+            per_parent_beam_widths=[1, 1, 1, 1],
         )
 
 
@@ -136,7 +136,7 @@ def test_schedule_geometry_uses_previous_width_for_each_request(
         previous = view
 
 
-def test_expansion_widths_controls_per_parent_candidate_width() -> None:
+def test_per_parent_beam_widths_controls_per_parent_candidate_width() -> None:
     for stage, expected in enumerate((2, 2, 1)):
         view = BeamBatchExecutionView(
             session_id="session",
@@ -150,7 +150,7 @@ def test_expansion_widths_controls_per_parent_candidate_width() -> None:
             beam_width=4,
             produces_output=True,
             dynamic_beam_widths=(2, 4, 4),
-            expansion_widths=(2, 2, 1),
+            per_parent_beam_widths=(2, 2, 1),
         )
         assert view.candidate_top_k == expected
 

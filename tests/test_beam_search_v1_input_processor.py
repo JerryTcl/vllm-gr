@@ -402,7 +402,7 @@ def test_stage_widths_and_return_limit_reach_worker_contract(
     assert request.output_options.num_return_sequences == 1
 
 
-def test_cuda_expansion_widths_reaches_worker_contract() -> None:
+def test_cuda_per_parent_beam_widths_reaches_worker_contract() -> None:
     config = _canonical_gr_config(backend="cuda")
     config["beam"]["max_width"] = 4
     engine = _make_engine(additional_config={"vllm_gr": config})
@@ -413,7 +413,7 @@ def test_cuda_expansion_widths_reaches_worker_contract() -> None:
         BeamSearchParams(
             beam_width=4,
             dynamic_beam_widths=[2, 4, 4],
-            expansion_widths=[2, 2, 1],
+            per_parent_beam_widths=[2, 2, 1],
             result_width=2,
             max_tokens=3,
             ignore_eos=True,
@@ -421,7 +421,7 @@ def test_cuda_expansion_widths_reaches_worker_contract() -> None:
         online=True,
     )
     assert request.beam_params.dynamic_beam_widths == (2, 4, 4)
-    assert request.beam_params.expansion_widths == (2, 2, 1)
+    assert request.beam_params.per_parent_beam_widths == (2, 2, 1)
 
 
 def test_cuda_unconstrained_request_accepts_budget_beyond_table_depth() -> None:

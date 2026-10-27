@@ -15,7 +15,7 @@ CONSTRAINT_TABLE_MAX_DECODE_STEPS = 3
 MAX_BEAM_WIDTH = 256
 # Per-parent candidate ceiling. Keep this independent from retained Beam width
 # so wider Beam storage does not implicitly enable unqualified Top-K shapes.
-MAX_EXPANSION_WIDTH = 256
+MAX_PER_PARENT_BEAM_WIDTH = 256
 # Conservative startup resource policy, including the implicit max-width bank.
 # This bounds retained width count; it is not a guarantee that graphs fit memory.
 MAX_NPU_BEAM_GRAPH_WIDTHS = 8

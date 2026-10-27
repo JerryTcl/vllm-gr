@@ -47,7 +47,7 @@ for both fixed-width and dynamic-width Beam requests. A matching
 `protocol_version == 1` alone does not establish schema compatibility.
 
 `BeamBatchParams` uses an array-like MsgPack struct with strict unknown-field
-validation. Its appended `dynamic_beam_widths` and `expansion_widths` fields have defaults so a new
+validation. Its appended `dynamic_beam_widths` and `per_parent_beam_widths` fields have defaults so a new
 decoder can read an older, shorter array. However, array encoding still emits
 the trailing field when its value is `None`; an old strict decoder rejects that
 new array even for a fixed-width request. Supporting rolling upgrades would
@@ -72,7 +72,7 @@ class BeamBatchParams:
     length_penalty: float = 1.0
     catalog_strategy: Literal["fill", "null"] | None = None
     dynamic_beam_widths: tuple[int, ...] | None = None
-    expansion_widths: tuple[int, ...] | None = None
+    per_parent_beam_widths: tuple[int, ...] | None = None
 
 
 class BeamOutputOptions:
@@ -242,7 +242,7 @@ class BeamItemCandidates:
 
 Bootstrap uses `P=1`. Decode uses `P=num_active_beams`, with
 `P <= W`. The reference never fabricates W Prefill parent rows.
-Without `expansion_widths`, candidate generation uses `K=W_out`. CUDA requires
+Without `per_parent_beam_widths`, candidate generation uses `K=W_out`. CUDA requires
 `K_1=W_1` for bootstrap and may set K independently for later stages, provided
 the complete pool can retain W winners: `W_i <= W_(i-1)*K_i`. Both values
 remain within the existing limit of 256.

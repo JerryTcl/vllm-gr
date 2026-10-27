@@ -75,7 +75,7 @@ class BeamBatchExecutionView:
     beam_width: int
     produces_output: bool
     dynamic_beam_widths: tuple[int, ...] | None = None
-    expansion_widths: tuple[int, ...] | None = None
+    per_parent_beam_widths: tuple[int, ...] | None = None
     row_request_indices: tuple[int, ...] = field(init=False)
     row_beam_indices: tuple[int, ...] = field(init=False)
     prompt_token_offsets: tuple[int, ...] = field(init=False)
@@ -94,12 +94,12 @@ class BeamBatchExecutionView:
             for index, active_width in enumerate(widths):
                 if _positive_int(f"dynamic_beam_widths[{index}]", active_width) > width:
                     _fail("dynamic_beam_widths entries must not exceed beam_width")
-        if self.expansion_widths is not None:
-            factors = _immutable_tuple("expansion_widths", self.expansion_widths)
+        if self.per_parent_beam_widths is not None:
+            factors = _immutable_tuple("per_parent_beam_widths", self.per_parent_beam_widths)
             if len(factors) not in (1, 2, 3) or self.stage_index >= len(factors):
-                _fail("expansion_widths must cover every stage in a 1/2/3-step session")
+                _fail("per_parent_beam_widths must cover every stage in a 1/2/3-step session")
             for index, factor in enumerate(factors):
-                _positive_int(f"expansion_widths[{index}]", factor)
+                _positive_int(f"per_parent_beam_widths[{index}]", factor)
         if not isinstance(self.produces_output, bool):
             _fail(f"produces_output must be a bool, got {self.produces_output!r}")
 
@@ -179,7 +179,7 @@ class BeamBatchExecutionView:
             beam_width=cast(int, _attribute(params, "beam_width")),
             produces_output=cast(bool, _attribute(metadata, "produces_output")),
             dynamic_beam_widths=getattr(params, "dynamic_beam_widths", None),
-            expansion_widths=getattr(params, "expansion_widths", None),
+            per_parent_beam_widths=getattr(params, "per_parent_beam_widths", None),
         )
 
         total_prompt_tokens = _positive_int(
@@ -219,8 +219,8 @@ class BeamBatchExecutionView:
 
     @property
     def candidate_top_k(self) -> int:
-        if self.expansion_widths is not None:
-            return self.expansion_widths[self.stage_index]
+        if self.per_parent_beam_widths is not None:
+            return self.per_parent_beam_widths[self.stage_index]
         # Taking fewer than the target width per parent can lose global Top-K
         # winners when a schedule expands after an earlier pruning step.
         return self.output_width
@@ -280,7 +280,7 @@ class BeamBatchExecutionView:
             self.num_prompt_tokens_by_request,
             self.beam_width,
             self.dynamic_beam_widths,
-            self.expansion_widths,
+            self.per_parent_beam_widths,
         )
         other_identity = (
             other.session_id,
@@ -289,7 +289,7 @@ class BeamBatchExecutionView:
             other.num_prompt_tokens_by_request,
             other.beam_width,
             other.dynamic_beam_widths,
-            other.expansion_widths,
+            other.per_parent_beam_widths,
         )
         if other_identity != identity:
             _fail("logical Beam batch identity changed across stages")

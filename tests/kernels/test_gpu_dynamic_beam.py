@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unav
 @pytest.mark.parametrize("batch", [1, 2, 4])
 @pytest.mark.parametrize("graph", [False, True])
 @pytest.mark.parametrize(
-    "widths,expansion_widths",
+    "widths,per_parent_beam_widths",
     [
         ((4, 2, 1), None),
         ((1, 3, 4), None),
@@ -37,7 +37,9 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unav
         ((2, 4, 4), (2, 2, 1)),
     ],
 )
-def test_dynamic_stage_execution_and_reuse(widths, expansion_widths, graph, batch, constrained):
+def test_dynamic_stage_execution_and_reuse(
+    widths, per_parent_beam_widths, graph, batch, constrained
+):
     worker = admission_worker()
     from tests.constraints.test_table import make_table
     from vllm_gr.constraints.loader import _upload_cuda_backend
@@ -73,7 +75,7 @@ def test_dynamic_stage_execution_and_reuse(widths, expansion_widths, graph, batc
                 beam_params=msgspec.structs.replace(
                     m.beam_params,
                     dynamic_beam_widths=widths,
-                    expansion_widths=expansion_widths,
+                    per_parent_beam_widths=per_parent_beam_widths,
                 ),
                 output_options=msgspec.structs.replace(
                     m.output_options, num_return_sequences=min(2, widths[-1])
@@ -85,7 +87,7 @@ def test_dynamic_stage_execution_and_reuse(widths, expansion_widths, graph, batc
             }
             owner = get_stage_runner(worker, scheduled)
             assert (owner.dynamic is not None) == (
-                expansion_widths is not None or any(width != 4 for width in widths)
+                per_parent_beam_widths is not None or any(width != 4 for width in widths)
             )
             if first_owner is None:
                 first_owner = owner
@@ -112,7 +114,7 @@ def test_dynamic_stage_execution_and_reuse(widths, expansion_widths, graph, batc
                 for token in legal.get(prefix, []) if constrained else range(6):
                     total = float(torch.tensor(score, dtype=torch.float32) + logprobs[token])
                     parent_choices.append((prefix + (token,), total))
-                top_k = width if expansion_widths is None else expansion_widths[stage]
+                top_k = width if per_parent_beam_widths is None else per_parent_beam_widths[stage]
                 choices.extend(sorted(parent_choices, key=lambda item: -item[1])[:top_k])
             expected = sorted(choices, key=lambda item: -item[1])[:width]
             receipt = owner.sample()

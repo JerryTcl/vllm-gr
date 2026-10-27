@@ -192,27 +192,27 @@ def test_request_positive_geometry_is_fail_closed(bad_value: object) -> None:
         validate_beam_batch_request(_request(beam_params=_params(beam_width=bad_value)))
 
 
-def test_expansion_widths_reject_more_than_three_steps_at_protocol_boundary() -> None:
-    with pytest.raises(BeamContractError, match="expansion_widths"):
+def test_per_parent_beam_widths_reject_more_than_three_steps_at_protocol_boundary() -> None:
+    with pytest.raises(BeamContractError, match="per_parent_beam_widths"):
         validate_beam_batch_request(
             _request(
                 beam_params=_params(
                     beam_width=1,
                     max_tokens=4,
-                    expansion_widths=(1, 1, 1, 1),
+                    per_parent_beam_widths=(1, 1, 1, 1),
                 )
             )
         )
 
 
-def test_expansion_widths_require_matching_bootstrap_width() -> None:
-    with pytest.raises(BeamContractError, match="first expansion width"):
+def test_per_parent_beam_widths_require_matching_bootstrap_width() -> None:
+    with pytest.raises(BeamContractError, match="first per-parent beam width"):
         validate_beam_batch_request(
             _request(
                 beam_params=_params(
                     beam_width=4,
                     dynamic_beam_widths=(2, 4, 4),
-                    expansion_widths=(4, 2, 1),
+                    per_parent_beam_widths=(4, 2, 1),
                 )
             )
         )

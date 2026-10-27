@@ -163,11 +163,11 @@ def validate_gr_device_config(config: Any, request: BeamBatchRequest | None = No
         )
     if (
         request is not None
-        and request.beam_params.expansion_widths is not None
+        and request.beam_params.per_parent_beam_widths is not None
         and device is not None
         and str(device).split(":")[0] != "cuda"
     ):
-        raise ValueError("expansion_widths requires CUDA beam_search_v1")
+        raise ValueError("per_parent_beam_widths requires CUDA beam_search_v1")
     if (
         request is not None
         and device is not None
@@ -207,16 +207,16 @@ def validate_gr_request(request: BeamBatchRequest, *, config: Any = None) -> Non
         from vllm_gr.config.models import CONSTRAINT_TABLE_MAX_DECODE_STEPS
 
         gr_config = GRConfig.from_vllm_config(config)
-        expansion_widths = request.beam_params.expansion_widths
+        per_parent_beam_widths = request.beam_params.per_parent_beam_widths
         if (
-            expansion_widths is not None
+            per_parent_beam_widths is not None
             and gr_config.constrained_generation is not False
             and (
                 gr_config.constraint_table is None
-                or max(expansion_widths) > gr_config.constraint_table.max_top_k
+                or max(per_parent_beam_widths) > gr_config.constraint_table.max_top_k
             )
         ):
-            raise ValueError("an expansion width exceeds the Constraint Table TopK capacity")
+            raise ValueError("a per-parent beam width exceeds the Constraint Table TopK capacity")
         max_tokens = request.beam_params.max_tokens
         if (
             gr_config.constrained_generation is not False

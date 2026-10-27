@@ -4,7 +4,7 @@
 from vllm.exceptions import VLLMValidationError
 from vllm.sampling_params import BeamSearchParams as BaseBeamSearchParams
 
-from vllm_gr.config import MAX_BEAM_WIDTH, MAX_EXPANSION_WIDTH
+from vllm_gr.config import MAX_BEAM_WIDTH, MAX_PER_PARENT_BEAM_WIDTH
 
 
 class BeamSearchParams(
@@ -31,7 +31,7 @@ class BeamSearchParams(
     result_width: int | None = None
     # CUDA V1 only. Per-parent candidate count for each generated token.
     # When omitted, the historical K=W behavior is preserved.
-    expansion_widths: list[int] | None = None
+    per_parent_beam_widths: list[int] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -68,39 +68,39 @@ class BeamSearchParams(
                 parameter="dynamic_beam_widths",
                 value=widths,
             )
-        expansion_widths = self.expansion_widths
-        if expansion_widths is not None:
+        per_parent_beam_widths = self.per_parent_beam_widths
+        if per_parent_beam_widths is not None:
             if (
-                not isinstance(expansion_widths, list)
+                not isinstance(per_parent_beam_widths, list)
                 or decode_steps not in (1, 2, 3)
-                or len(expansion_widths) != decode_steps
+                or len(per_parent_beam_widths) != decode_steps
                 or any(
-                    type(factor) is not int or not 1 <= factor <= MAX_EXPANSION_WIDTH
-                    for factor in expansion_widths
+                    type(factor) is not int or not 1 <= factor <= MAX_PER_PARENT_BEAM_WIDTH
+                    for factor in per_parent_beam_widths
                 )
             ):
                 raise VLLMValidationError(
-                    "expansion_widths must contain one integer in "
-                    f"[1, {MAX_EXPANSION_WIDTH}] per effective generation step",
-                    parameter="expansion_widths",
-                    value=expansion_widths,
+                    "per_parent_beam_widths must contain one integer in "
+                    f"[1, {MAX_PER_PARENT_BEAM_WIDTH}] per effective generation step",
+                    parameter="per_parent_beam_widths",
+                    value=per_parent_beam_widths,
                 )
             retained_widths = widths or [self.beam_width] * decode_steps
-            if expansion_widths[0] != retained_widths[0]:
+            if per_parent_beam_widths[0] != retained_widths[0]:
                 raise VLLMValidationError(
-                    "the first expansion width must equal the first retained width",
-                    parameter="expansion_widths",
-                    value=expansion_widths,
+                    "the first per-parent beam width must equal the first retained width",
+                    parameter="per_parent_beam_widths",
+                    value=per_parent_beam_widths,
                 )
             input_width = retained_widths[0]
-            for expansion_width, output_width in zip(
-                expansion_widths[1:], retained_widths[1:]
+            for per_parent_beam_width, output_width in zip(
+                per_parent_beam_widths[1:], retained_widths[1:]
             ):
-                if output_width > input_width * expansion_width:
+                if output_width > input_width * per_parent_beam_width:
                     raise VLLMValidationError(
-                        "each retained width must not exceed input_width * expansion_width",
-                        parameter="expansion_widths",
-                        value=expansion_widths,
+                        "each retained width must not exceed input_width * per_parent_beam_width",
+                        parameter="per_parent_beam_widths",
+                        value=per_parent_beam_widths,
                     )
                 input_width = output_width
         final_width = self.beam_width if widths is None else widths[-1]

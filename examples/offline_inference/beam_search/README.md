@@ -374,7 +374,7 @@ For CUDA, K and W can be configured independently after the first stage:
 params = BeamSearchParams(
     beam_width=4,
     dynamic_beam_widths=[2, 4, 4],  # W1, W2, W3
-    expansion_widths=[2, 2, 1],        # K1, K2, K3 per parent
+    per_parent_beam_widths=[2, 2, 1],        # K1, K2, K3 per parent
     result_width=2,
     max_tokens=3,
     ignore_eos=True,

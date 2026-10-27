@@ -781,7 +781,7 @@ class GPUBeamStageRunner:
                 if self.backend is not None:
                     if layout.candidate_top_k > self.backend.info.max_top_k:
                         raise ValueError(
-                            "an expansion width exceeds the live Constraint Table capacity"
+                            "a per-parent beam width exceeds the live Constraint Table capacity"
                         )
                     self.backend.select_out_unchecked(
                         self.logits,
