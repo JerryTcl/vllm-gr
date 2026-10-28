@@ -62,7 +62,10 @@ def test_dynamic_stage_execution_and_reuse(
     from vllm_gr.constraints.loader import _upload_cuda_backend
 
     worker.constraint_backend, _ = _upload_cuda_backend(
-        make_table(), device=worker.device, max_top_k=4, max_rows=batch * 4
+        make_table(),
+        device=worker.device,
+        max_top_k=2 if per_parent_beam_widths is not None else 4,
+        max_rows=batch * 4,
     )
     worker.constraint_backend._mark_ready()
     if not constrained:

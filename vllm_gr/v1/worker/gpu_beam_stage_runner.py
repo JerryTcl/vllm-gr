@@ -1080,7 +1080,7 @@ def get_stage_runner(
         or any(table.device != worker.device for table in backend._tables())
     ):
         raise ValueError("constraint backend is not ready or its model/device binding differs")
-    required_top_k = max((cfg.beam_max_width, *(m.beam_params.per_parent_beam_widths or ())))
+    required_top_k = max(m.beam_params.per_parent_beam_widths or (cfg.beam_max_width,))
     if backend is not None and (
         backend.info.max_rows
         < hooks_type.required_constraint_rows(len(m.request_ids), cfg.beam_max_width)
