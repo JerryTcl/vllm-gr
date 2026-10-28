@@ -94,12 +94,6 @@ class BeamBatchExecutionView:
             for index, active_width in enumerate(widths):
                 if _positive_int(f"dynamic_beam_widths[{index}]", active_width) > width:
                     _fail("dynamic_beam_widths entries must not exceed beam_width")
-        if self.per_parent_beam_widths is not None:
-            factors = _immutable_tuple("per_parent_beam_widths", self.per_parent_beam_widths)
-            if len(factors) not in (1, 2, 3) or self.stage_index >= len(factors):
-                _fail("per_parent_beam_widths must cover every stage in a 1/2/3-step session")
-            for index, factor in enumerate(factors):
-                _positive_int(f"per_parent_beam_widths[{index}]", factor)
         if not isinstance(self.produces_output, bool):
             _fail(f"produces_output must be a bool, got {self.produces_output!r}")
 

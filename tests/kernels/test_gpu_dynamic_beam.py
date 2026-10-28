@@ -22,6 +22,23 @@ from vllm_gr.v1.worker.gpu_beam_stage_runner import get_stage_runner
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
 
 
+@pytest.mark.parametrize("per_parent_beam_widths", [(4, 8, 1), (4, 4, 8)])
+def test_admission_rejects_later_candidate_width_beyond_backend_capacity(per_parent_beam_widths):
+    worker = admission_worker()
+    m = metadata()
+    m = replace(
+        m,
+        beam_params=msgspec.structs.replace(
+            m.beam_params, per_parent_beam_widths=per_parent_beam_widths
+        ),
+    )
+    with pytest.raises(ValueError, match="constraint backend capacity"):
+        get_stage_runner(worker, dispatch(m))
+    assert not hasattr(worker, "_beam_context")
+    assert not hasattr(worker, "_gr_gpu_stage_runner")
+    worker._beam_postprocess_workspaces.require.assert_not_called()
+
+
 @pytest.mark.parametrize("constrained", [True, False])
 @pytest.mark.parametrize("batch", [1, 2, 4])
 @pytest.mark.parametrize("graph", [False, True])

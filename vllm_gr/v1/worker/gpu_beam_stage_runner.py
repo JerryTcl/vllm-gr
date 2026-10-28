@@ -779,10 +779,6 @@ class GPUBeamStageRunner:
                     else (self.tokens[:rows], self.scores[:rows], self.valid[:rows])
                 )
                 if self.backend is not None:
-                    if layout.candidate_top_k > self.backend.info.max_top_k:
-                        raise ValueError(
-                            "a per-parent beam width exceeds the live Constraint Table capacity"
-                        )
                     self.backend.select_out_unchecked(
                         self.logits,
                         ConstraintMetadata(
@@ -1084,12 +1080,15 @@ def get_stage_runner(
         or any(table.device != worker.device for table in backend._tables())
     ):
         raise ValueError("constraint backend is not ready or its model/device binding differs")
+    required_top_k = max((cfg.beam_max_width, *(m.beam_params.per_parent_beam_widths or ())))
     if backend is not None and (
         backend.info.max_rows
         < hooks_type.required_constraint_rows(len(m.request_ids), cfg.beam_max_width)
-        or backend.info.max_top_k < cfg.beam_max_width
+        or backend.info.max_top_k < required_top_k
     ):
-        raise ValueError("constraint backend capacity is smaller than fixed Beam width")
+        raise ValueError(
+            "constraint backend capacity is smaller than requested Beam or candidate widths"
+        )
     if (
         worker.model_config.is_encoder_decoder
         or worker.model_config.is_hybrid

@@ -424,6 +424,25 @@ def test_cuda_per_parent_beam_widths_reaches_worker_contract() -> None:
     assert request.beam_params.per_parent_beam_widths == (2, 2, 1)
 
 
+@pytest.mark.parametrize("online", [False, True])
+def test_npu_per_parent_beam_widths_is_rejected_before_submission(online: bool) -> None:
+    engine = _make_engine(additional_config={"vllm_gr": _canonical_gr_config(backend="npu")})
+    engine.vllm_config.device_config = SimpleNamespace(device="npu")
+    with pytest.raises(BeamSearchRequestError, match="per_parent_beam_widths requires CUDA"):
+        _prepare_request(
+            engine,
+            [1, 2],
+            BeamSearchParams(
+                beam_width=2,
+                per_parent_beam_widths=[2, 2, 2],
+                max_tokens=3,
+                ignore_eos=True,
+            ),
+            online=online,
+        )
+    engine.submit_gr_session.assert_not_called()
+
+
 def test_cuda_unconstrained_request_accepts_budget_beyond_table_depth() -> None:
     canonical = _canonical_gr_config(enabled=False)
     canonical["constrained_generation"] = False

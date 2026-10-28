@@ -178,8 +178,6 @@ def _create_batch_request(
     per_parent_beam_widths = getattr(params, "per_parent_beam_widths", None)
     result_width = getattr(params, "result_width", None)
     device = getattr(getattr(vllm_config, "device_config", None), "device", "cuda")
-    if per_parent_beam_widths is not None and str(device).split(":")[0] != "cuda":
-        raise BeamSearchRequestError("per_parent_beam_widths requires CUDA beam_search_v1")
     if str(device).split(":")[0] not in ("cuda", "npu") and (
         dynamic_widths is not None or result_width is not None
     ):
