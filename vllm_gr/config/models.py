@@ -8,6 +8,7 @@ from enum import Enum
 
 GR_CONFIG_SCHEMA_VERSION = 1
 CONSTRAINT_TABLE_FORMAT = "constraint_table_v1"
+MULTI_TRIE_CONSTRAINT_TABLE_FORMAT = "constraint_table_v2"
 CONSTRAINT_TABLE_MAX_DECODE_STEPS = 3
 # Global Beam width ceiling.  This constant also gates the raw Beam operators,
 # so it is raised only together with the kernels that make W > 256 correct:

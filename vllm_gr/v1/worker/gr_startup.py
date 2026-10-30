@@ -170,7 +170,9 @@ def _capture_batch(
     )
     scheduled = SimpleNamespace(num_scheduled_tokens=dict.fromkeys(request_ids, 1))
     setattr(scheduled, GR_STAGE_OUTPUT_ATTR, {name: m})
-    owner = get_stage_runner(worker, scheduled, hooks_type=hooks_type or _StageExecutionHooks)
+    owner = get_stage_runner(
+        worker, scheduled, hooks_type=hooks_type or _StageExecutionHooks, for_startup_capture=True
+    )
     owner.previous = m
     # The null block is a safe capture prefix. Real requests replace its
     # contents and actual length while the device table address stays fixed.

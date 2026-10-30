@@ -218,9 +218,13 @@ def _reject_candidate_width_below_dynamic_schedule(
             )
 
 
-def validate_gr_request(request: BeamBatchRequest, *, config: Any = None) -> None:
+def validate_gr_request(
+    request: BeamBatchRequest, *, config: Any = None, trie_count: int | None = None
+) -> None:
     """Validate shared V1 semantics before native ADD or Worker allocation."""
     validate_beam_batch_request(request)
+    if trie_count is not None and any(item.trie_id >= trie_count for item in request.items):
+        raise ValueError("trie_id is outside the loaded constraint table")
     if len(request.items) not in SUPPORTED_BEAM_BATCH_SIZES:
         raise ValueError(
             "beam_search_v1 supports batch sizes "

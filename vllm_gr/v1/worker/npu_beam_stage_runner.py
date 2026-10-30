@@ -287,6 +287,8 @@ class NPUEagerBeamStageRunner:
         metadata = self._metadata(scheduler_output)
         session_init = getattr(metadata, "session_init", None)
         if session_init is not None:
+            if any(item.trie_id != 0 for item in session_init.items):
+                raise ValueError("NPU currently supports trie_id=0 only")
             if plan.execution.kind != "prefill" or self.session_request is not None:
                 raise ValueError("NPU session_init must appear once on Prefill")
             self.session_request = session_init

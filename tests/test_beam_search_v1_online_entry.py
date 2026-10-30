@@ -35,7 +35,13 @@ async def _rank(client: object) -> int:
     return 0
 
 
-def _run(prompt: Any, client_params: BeamSearchParams, calls: list[Any] | None = None) -> list[str]:
+def _run(
+    prompt: Any,
+    client_params: BeamSearchParams,
+    calls: list[Any] | None = None,
+    *,
+    trie_ids: list[int] | None = None,
+) -> list[str]:
     """Drive one online V1 request; return the GC freezes it asked for.
 
     ``calls`` receives whatever was handed to the engine, so a caller that
@@ -57,6 +63,7 @@ def _run(prompt: Any, client_params: BeamSearchParams, calls: list[Any] | None =
             prompt=prompt,
             request_id="request-id",
             params=client_params,
+            trie_ids=trie_ids,
         ):
             pass
 
@@ -120,6 +127,13 @@ def test_only_ignore_eos_is_rewritten() -> None:
     assert call.params.max_tokens == MAX_TOKENS
     assert call.request_id == "request-id"
     assert call.prompts == ("prompt",)
+
+
+def test_trie_ids_travel_separately_from_search_params() -> None:
+    calls: list[Any] = []
+    _run(["first", "second"], _client_params(ignore_eos=False), calls, trie_ids=[1, 0])
+    assert calls[0].trie_ids == [1, 0]
+    assert calls[0].prompts == ("first", "second")
 
 
 def test_the_frontend_heap_is_frozen_once_the_engine_has_answered() -> None:

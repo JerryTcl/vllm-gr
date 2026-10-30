@@ -225,7 +225,19 @@ def _create_batch_request(
     engine_requests: tuple[EngineCoreRequest, ...],
     params: Any,
     vllm_config: Any,
+    trie_ids: list[int] | tuple[int, ...] | None = None,
 ) -> BeamBatchRequest:
+    if trie_ids is None:
+        trie_ids = (0,) * len(engine_requests)
+    if (
+        not isinstance(trie_ids, (list, tuple))
+        or len(trie_ids) != len(engine_requests)
+        or any(type(trie_id) is not int or trie_id < 0 for trie_id in trie_ids)
+    ):
+        raise BeamSearchRequestError("trie_ids must contain one non-negative integer per prompt")
+    device = getattr(getattr(vllm_config, "device_config", None), "device", "cuda")
+    if str(device).split(":")[0] == "npu" and any(trie_ids):
+        raise BeamSearchRequestError("multi-trie requests currently require CUDA")
     if not engine_requests or engine_requests[0].request_id != session_id:
         raise BeamSearchRequestError(
             "the first EngineCoreRequest.request_id must equal the GR session ID"
@@ -300,7 +312,7 @@ def _create_batch_request(
         protocol_version=BEAM_BATCH_PROTOCOL_VERSION,
         batch_id=session_id,
         items=tuple(
-            BeamBatchItem(item_index=index, request=request)
+            BeamBatchItem(item_index=index, request=request, trie_id=trie_ids[index])
             for index, request in enumerate(engine_requests)
         ),
         beam_params=batch_params,
@@ -349,6 +361,7 @@ class BeamSearchInputProcessor:
             engine_requests=tuple(engine_requests),
             params=call.params,
             vllm_config=self.engine.vllm_config,
+            trie_ids=call.trie_ids,
         )
         self.boundary_token_ids = (begin_token_id, end_token_id)
         return request
@@ -398,6 +411,7 @@ class BeamSearchInputProcessor:
             engine_requests=tuple(engine_requests),
             params=call.params,
             vllm_config=self.engine.vllm_config,
+            trie_ids=call.trie_ids,
         )
         self.boundary_token_ids = (begin_token_id, end_token_id)
         return request

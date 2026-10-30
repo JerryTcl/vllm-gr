@@ -49,6 +49,7 @@ class BeamBatchItem(
 ):  # type: ignore[call-arg]
     item_index: int
     request: EngineCoreRequest
+    trie_id: int = 0
 
 
 class BeamBatchParams(
@@ -436,6 +437,8 @@ def validate_beam_batch_request(request: BeamBatchRequest) -> None:
             )
         if not isinstance(item.request, EngineCoreRequest):
             _fail("item.request must be an EngineCoreRequest")
+        if type(item.trie_id) is not int or item.trie_id < 0:
+            _fail("item.trie_id must be a non-negative integer")
         request_id = _non_empty_string(
             f"items[{expected_index}].request.request_id",
             item.request.request_id,

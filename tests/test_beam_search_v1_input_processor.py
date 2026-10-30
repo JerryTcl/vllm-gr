@@ -311,6 +311,57 @@ def test_offline_inputs_preserve_caller_formed_batch_order(batch_size: int) -> N
     assert len({item.request.request_id for item in request.items}) == batch_size
 
 
+@pytest.mark.parametrize("online", [False, True])  # type: ignore[misc]
+@pytest.mark.parametrize("independent_k", [False, True])  # type: ignore[misc]
+@pytest.mark.parametrize(  # type: ignore[misc]
+    "trie_ids", [None, [0, 1], [1, 1], (1, 0), [True, 0], [-1, 0], [None, 1], [0]]
+)
+def test_per_prompt_trie_selection(trie_ids: Any, online: bool, independent_k: bool) -> None:
+    engine = _make_engine()
+    params = BeamSearchParams(
+        beam_width=2,
+        max_tokens=3,
+        ignore_eos=True,
+        per_parent_beam_widths=[2, 1, 1] if independent_k else None,
+    )
+
+    def prepare() -> BeamBatchRequest:
+        processor = BeamSearchInputProcessor(engine)
+        if online:
+            serving = SimpleNamespace(
+                input_processor=SimpleNamespace(tokenizer=SimpleNamespace(eos_token_id=2))
+            )
+            call = OnlineBeamSearchRequest(
+                prompts=([1, 2], [3, 4]),
+                request_id="external-id",
+                params=params,
+                trie_ids=trie_ids,
+            )
+            return asyncio.run(processor.process_online_inputs(serving, call))
+        engine.get_supported_tasks = lambda: ("generate",)
+        llm = SimpleNamespace(
+            get_tokenizer=lambda: SimpleNamespace(eos_token_id=2),
+            _preprocess_cmpl=lambda prompts: prompts,
+            _lora_request_to_seq=lambda lora, size: [lora] * size,
+        )
+        offline_call = OfflineBeamSearchRequest(
+            prompts=[[1, 2], [3, 4]], params=params, trie_ids=trie_ids
+        )
+        return processor.process_offline_inputs(llm, offline_call)
+
+    if trie_ids is not None and (
+        len(trie_ids) != 2 or any(type(trie_id) is not int or trie_id < 0 for trie_id in trie_ids)
+    ):
+        with pytest.raises(BeamSearchRequestError, match="trie_ids"):
+            prepare()
+    else:
+        request = prepare()
+        assert [item.trie_id for item in request.items] == (
+            [0, 0] if trie_ids is None else list(trie_ids)
+        )
+        assert request.beam_params.per_parent_beam_widths == ((2, 1, 1) if independent_k else None)
+
+
 def test_configured_candidate_width_reaches_the_request_under_dynamic_schedules() -> None:
     """A configured K is carried through, whatever the dynamic schedule.
 

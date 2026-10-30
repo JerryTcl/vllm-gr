@@ -454,6 +454,7 @@ class GPUBeamStageRunner:
         bindings: tuple[BeamRequestBinding, ...],
         backend: CUDAConstraintBackend | None,
         hooks: _StageExecutionHooks | None = None,
+        trie_ids: tuple[int, ...] | None = None,
     ):
         expected = tuple(range(len(bindings)))
         if not bindings or (
@@ -543,8 +544,27 @@ class GPUBeamStageRunner:
         self.scores = w.topk_scores[:batch_size].reshape(rows, candidate_width)
         self.valid = w.topk_valid_mask[:batch_size].reshape(rows, candidate_width)
         self.counts = w.topk_valid_counts[:batch_size].reshape(rows)
+        self.trie_ids_by_width: dict[int, torch.Tensor] = {}
+        self.configure_trie_ids(trie_ids)
         context._gr_execution_owner = self
         beam.workspace.execution_owner = self
+
+    def configure_trie_ids(self, trie_ids: tuple[int, ...] | None) -> None:
+        """Keep per-width request-major selectors stable across adapter reuse."""
+        if self.backend is None or self.backend.info.table_metadata.trie_count == 1:
+            return
+        if trie_ids is None or len(trie_ids) != len(self.bindings):
+            raise ValueError("multi-trie execution requires one trie_id per request")
+        source = torch.tensor(trie_ids, dtype=torch.int32, device=self.beam.state.device)
+        widths = {1, self.beam.state.beam_width, *(self.beam.layout.dynamic_beam_widths or ())}
+        for width in widths:
+            target = self.trie_ids_by_width.get(width)
+            if target is None:
+                target = torch.empty(
+                    (len(trie_ids) * width,), dtype=torch.int32, device=source.device
+                )
+                self.trie_ids_by_width[width] = target
+            target.view(len(trie_ids), width).copy_(source[:, None])
 
     def admit(self, scheduler_output: Any) -> BeamDispatchExecution:
         if self.closed:
@@ -814,6 +834,7 @@ class GPUBeamStageRunner:
                             self.temperatures[:rows],
                             0,
                             layout.candidate_top_k,
+                            trie_ids=self.trie_ids_by_width.get(layout.input_width),
                         ),
                         out_token_ids=candidates[0],
                         out_logprobs=candidates[1],
@@ -1049,6 +1070,7 @@ def get_stage_runner(
     scheduler_output: Any,
     *,
     hooks_type: type[_StageExecutionHooks] = _StageExecutionHooks,
+    for_startup_capture: bool = False,
 ) -> GPUBeamStageRunner:
     """Admit first, then derive the adapter from existing Worker resources."""
     existing = getattr(worker, "_gr_gpu_stage_runner", None)
@@ -1163,6 +1185,18 @@ def get_stage_runner(
         BeamPostprocessWorkspaceKey(cfg.beam_max_width, candidate_width, worker.model_config.dtype)
     )
     view = BeamBatchExecutionView.from_stage_metadata(m)
+    trie_count = backend.info.table_metadata.trie_count if backend is not None else 1
+    trie_ids = None
+    if m.session_init is not None:
+        trie_ids = tuple(item.trie_id for item in m.session_init.items)
+        if any(type(root) is not int or not 0 <= root < trie_count for root in trie_ids):
+            raise ValueError("trie_id is outside the loaded constraint table")
+    elif for_startup_capture:
+        # Capture has no user request. Seed the same persistent selector buffers
+        # with Trie 0; real sessions replace their contents before execution.
+        trie_ids = (0,) * view.batch_size
+    elif trie_count > 1:
+        raise ValueError("multi-trie execution requires the initial batch request")
     context = getattr(worker, "_beam_context", None)
     if context is None:
         context = _create_beam_context(worker, cfg, max_batch=max(SUPPORTED_BATCH_SIZES))
@@ -1293,12 +1327,15 @@ def get_stage_runner(
         adapter.execution_error = None
         adapter.prepared = None
         adapter.constraint_steps = beam.state.num_generated_tokens[: view.batch_size]
+        adapter.configure_trie_ids(trie_ids)
         context._gr_execution_owner = adapter
         workspace.execution_owner = adapter
     else:
         hooks = hooks_type(worker)
         hooks.prepare_new_adapter(view)
-        adapter = GPUBeamStageRunner(worker, beam, binding_tuple, backend, hooks=hooks)
+        adapter = GPUBeamStageRunner(
+            worker, beam, binding_tuple, backend, hooks=hooks, trie_ids=trie_ids
+        )
     if dynamic_requested:
         if adapter.dynamic is None:
             adapter.dynamic = GPUDynamicBeam(adapter)
