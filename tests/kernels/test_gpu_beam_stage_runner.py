@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import msgspec
+import numpy as np
 import pytest
 import torch
 
@@ -534,16 +535,16 @@ def test_session_init_binding_rejected_before_writes(fault):
     owner = runtime()
     m = metadata()
     request = _batch_request()
-    request.items[0].request.prompt_token_ids = [1] * m.num_prompt_tokens
+    request.items[0].request.prompt_token_ids = np.full(m.num_prompt_tokens, 1, dtype=np.int64)
     request = msgspec.structs.replace(request, beam_params=m.beam_params)
     if fault == "protocol":
-        request = msgspec.structs.replace(request, protocol_version=2)
+        request = msgspec.structs.replace(request, protocol_version=request.protocol_version + 1)
     elif fault == "item":
         request = msgspec.structs.replace(
             request, items=(msgspec.structs.replace(request.items[0], item_index=1),)
         )
     else:
-        request.items[0].request.prompt_token_ids = [1]
+        request.items[0].request.prompt_token_ids = np.ones(1, dtype=np.int64)
     before = owner.beam.state.sequence.clone()
     with pytest.raises(ValueError, match="session_init disagrees|protocol_version|item_index"):
         owner.admit(dispatch(replace(m, session_init=request)))

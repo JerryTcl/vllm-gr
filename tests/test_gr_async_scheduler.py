@@ -1173,13 +1173,13 @@ def test_terminal_transport_validates_inproc_and_wire_equally(wire: bool, fault:
         (valid_sequence, seq),
     )
     result = BeamBatchResult(
-        1,
+        BEAM_BATCH_PROTOCOL_VERSION,
         request.batch_id,
         BeamBatchOutput((item,)),
         _failure_result().failure if fault == "both" else None,
     )
     if fault == "protocol":
-        result = msgspec.structs.replace(result, protocol_version=2)
+        result = msgspec.structs.replace(result, protocol_version=BEAM_BATCH_PROTOCOL_VERSION + 1)
     elif fault == "empty_failure":
         result = msgspec.structs.replace(
             result,

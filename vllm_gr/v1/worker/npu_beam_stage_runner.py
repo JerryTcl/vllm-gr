@@ -650,7 +650,11 @@ class NPUEagerBeamStageRunner:
         stop_ids = set(params.stop_token_ids) if not params.ignore_stop_tokens else set()
         for row, item in enumerate(request.items):
             ranked = []
-            prompt_length = len(item.request.prompt_token_ids or ())
+            prompt_length = (
+                len(item.request.prompt_token_ids)
+                if item.request.prompt_token_ids is not None
+                else 0
+            )
             normalization = None
             normalizations = {}
             for beam, score in enumerate(score_rows[row]):

@@ -29,6 +29,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+import numpy as np
 import torch
 from vllm.logger import init_logger
 
@@ -101,24 +102,21 @@ def _can_fuse_prefill_state_writes(worker: Any, scheduler_output: Any, request: 
 
 def _apply_fused_prefill_state_writes(worker: Any, req_index: int) -> None:
     """Flush native registration writes with one H2D and one ordered kernel."""
-    from vllm.utils.torch_utils import async_tensor_h2d
-
     from vllm_gr.ops.cuda.gr_prefill_inputs import apply_gr_prefill_state_writes_v2
 
     states = worker.req_states
     block_table = worker.block_tables.block_tables[0]
     tokens = states.all_token_ids._staged_write_contents
     block_ids = block_table._staged_write_contents
-    payload = [
-        states.total_len._staged_write_contents[0],
-        states.num_computed_tokens._staged_write_contents[0],
-    ]
-    payload.extend(tokens)
-    payload.extend(block_ids)
-    # Keep per-dispatch storage and the native pinned transfer helper. The
-    # allocators retain the host copy until H2D completion and order device
-    # reuse on this stream; no mutable host buffer is shared across requests.
-    packed = async_tensor_h2d(payload, torch.int32, worker.device)
+    from vllm_gr.v1.worker.numpy_staging import NumpyStagedContents, array_h2d
+
+    token_array = tokens.array() if isinstance(tokens, NumpyStagedContents) else np.asarray(tokens)
+    payload = np.empty(2 + len(tokens) + len(block_ids), dtype=np.int32)
+    payload[0] = states.total_len._staged_write_contents[0]
+    payload[1] = states.num_computed_tokens._staged_write_contents[0]
+    payload[2 : 2 + len(tokens)] = token_array
+    payload[2 + len(tokens) :] = block_ids
+    packed = array_h2d(payload, torch.int32, worker.device)
     apply_gr_prefill_state_writes_v2[((max(len(tokens), len(block_ids)) + 255) // 256,)](
         packed,
         states.total_len.gpu,

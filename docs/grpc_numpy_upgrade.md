@@ -1,0 +1,111 @@
+# GR gRPC and NumPy token inputs
+
+## Background
+
+The HTTP/JSON path constructs Python token lists and text responses. This
+change adds token-based GR gRPC serving and keeps prompts as NumPy arrays
+through Engine Core and Worker staging. The code baseline is `decode_graph`.
+
+## Changes
+
+- Extend SMG protobuf 0.4.6 with beam options, `GenerateBatch` and optional
+  `input_ids_i64_le`, preserving original field numbers and method names.
+  Schema headers identify the source and additions.
+- Accept either repeated uint32 tokens via `np.asarray(..., dtype=np.int64)`
+  or raw little-endian int64 bytes via `np.frombuffer`. Each binary buffer holds
+  one prompt without a header or shape prefix; token count is byte length / 8.
+  Conflicting fields, empty/unaligned data and negative tokens fail. After
+  truncation, vocabulary validation matches native InputProcessor: use the
+  larger tokenizer/model bound when a tokenizer exists, otherwise skip the
+  vocabulary upper-bound check. Output vocabulary slicing does not restrict
+  prompt IDs. Truncation follows the tokenizer's configured side.
+- `BeamVllmEngineServicer` constructs the existing `BeamBatchRequest`, reuses
+  submit/wait/close sessions, and fills flat per-sample protobuf beam outputs.
+  GR Generate, GenerateBatch and Abort are supported. The servicer inherits
+  upstream HealthCheck, GetModelInfo and GetServerInfo; Embed remains disabled.
+  GetTokenizer remains UNIMPLEMENTED, as in the pinned upstream version.
+- gRPC currently uses Trie 0 for every input. Unlike Python/HTTP, the protocol
+  does not yet expose a per-input `trie_id`, so a batch cannot select different
+  Tries. The next version will add per-input Trie selection in a separate PR.
+- Patch bindings and the servicer during upstream gRPC startup. Upstream owns
+  engine/listener initialization, standard health, reflection, keepalive,
+  statistics and shutdown. GR supplies extended-schema reflection and drains
+  session cleanup before engine shutdown.
+- `BeamEngineCoreRequest` carries NumPy prompts. Core token storage and
+  scheduler adapters live in `v1/beam/token_buffer.py`; V2 GPU staging lives in
+  `v1/worker/numpy_staging.py`. Prefix hashes preserve baseline cache identity.
+
+```text
+protobuf repeated / bytes -> NumPy -> BeamBatchRequest
+ -> msgpack/ndarray IPC -> Core token buffer -> scheduler -> Worker staging/H2D
+ -> model + beam -> protobuf response
+```
+
+Frontend arrays pass through without a defensive snapshot or forced read-only
+flag. Legacy list inputs convert at the batch boundary. Core-owned storage,
+CPU staging and H2D still copy; this is not end-to-end zero copy. HTTP/offline
+output boundaries retain their list/tokenizer interfaces. Internal batch wire
+version is 2; frontend, Core and Workers must restart with the same revision.
+The GR batch contract requires nonempty contiguous nonnegative int64 arrays;
+`None` and embedding-only prompts are rejected.
+
+## Usage and tests
+
+Install `pip install -e '.[grpc]'`, then use existing GR settings:
+
+```bash
+vllm-gr serve /path/to/model --vllm-gr-config /path/to/gr-config.json --grpc --port 50051
+python examples/online_serving/grpc/client.py --address 127.0.0.1:50051
+python examples/online_serving/grpc/run_smoke.py --output /tmp/gr-grpc-smoke
+```
+
+The CI pre-commit job installs `.[dev,grpc]` and checks runtime imports before
+running tests. Local gRPC tests skip when optional dependencies are missing or
+grpcio/protobuf are below the generated bindings' required versions.
+
+The GPU example creates random tiny Llama weights and checks real production
+CLI requests. Generate bindings with `python tools/generate_grpc_proto.py`
+after installing `grpcio-tools==1.84.0`.
+
+Focused tests cover pinned upstream wire compatibility, both token encodings,
+input/beam validation, batch/single output fields, cancellation/error cleanup,
+standard health/reflection/stats, array passthrough, codec transport, prefix
+hash identity, token growth and Worker staging. The affected test selection
+passes 493 cases; full repository CI and V2 graph/NPU model validation were
+not run. GPU verification includes the example and the workload below.
+
+## Current code versus decode_graph
+
+Fresh measurements use a clean `decode_graph@2b84265` checkout for HTTP and the
+current working tree for both gRPC inputs. Single H20, FP16 V1 eager, identical
+random Qwen3 MoE weights (4.149B total / 0.311B active), B4 x 4096 prompt tokens,
+beam256, one Prefill plus three Decode forwards (four output tokens). Prefix
+cache, chunked prefill and constraints are disabled. Each path has 10 warmups
+and 200 measured requests, alternating GPU probes; all 600 outputs match.
+
+| Per batch (ms) | Baseline HTTP/JSON/list | Current gRPC binary | Current gRPC repeated |
+| --- | ---: | ---: | ---: |
+| Python frontend, input + output | 16.755 | 1.897 | 2.117 |
+| Model forward, excluding logits | 186.342 | 187.474 | 187.372 |
+| Beam search, including logits | 11.475 | 11.491 | 11.508 |
+| Client RTT minus Python server time | 1.339 | 0.719 | 0.646 |
+| Other server/framework time | 5.465 | 8.345 | 4.836 |
+| Client RTT | 221.375 | 209.925 | 206.479 |
+| RTT median, GPU probes off | 220.944 | 206.324 | 206.476 |
+| RTT P95, GPU probes off | 223.107 | 206.931 | 207.105 |
+
+The first six rows are means from the 100 GPU-probed requests per path; the
+first five sum to RTT. The last two rows use 100 GPU-probe-off controls;
+Python server boundary hooks remain enabled. Client request construction,
+encoding and reply parsing are outside RTT. Model and beam times sum four
+batch forwards/stages, without multiplying again by batch size.
+
+Other framework time is server time minus frontend, model and beam. The
+client/server difference includes transport/runtime scheduling, not just wire
+protocol work. HTTP returns text while gRPC returns token arrays, so frontend
+savings include decoding and response formatting. All samples are retained;
+isolated gRPC wall-time spikes affect means, so median/P95 are also reported.
+
+Final measurement code, source hashes, requests, logs and raw samples are
+archived outside the MR at
+`/workspace/ws/data/vllm-gr-mr-evidence-20261029/final-vs-decode-graph/`.

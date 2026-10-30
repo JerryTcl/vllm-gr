@@ -24,6 +24,16 @@ class GRServeSubcommand(ServeSubcommand):
 
     name = "serve"
 
+    @staticmethod
+    def cmd(args: argparse.Namespace) -> None:
+        if getattr(args, "grpc", False):
+            from vllm_gr.entrypoints.grpc.serve import patch_grpc_server
+
+            with patch_grpc_server():
+                ServeSubcommand.cmd(args)
+            return
+        ServeSubcommand.cmd(args)
+
     def validate(self, args: argparse.Namespace) -> None:
         # A canonical config owns the attention-backend choice. For legacy
         # serve invocations retain the historical CUSTOM default, but apply it

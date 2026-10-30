@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterator
 from dataclasses import asdict, fields, replace
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
+import numpy as np
 import pytest
 from vllm.entrypoints.generate.beam_search.utils import BeamSearchSequence
 from vllm.inputs import tokens_input
@@ -27,6 +27,7 @@ from vllm_gr.entrypoints.beam_search_v1.protocol import (
     OnlineBeamSearchRequest,
 )
 from vllm_gr.v1.beam.batch_contracts import (
+    BEAM_BATCH_PROTOCOL_VERSION,
     BeamBatchFailure,
     BeamBatchItem,
     BeamBatchOutput,
@@ -85,7 +86,7 @@ def _case(
         data_parallel_rank=None,
     )
     request = BeamBatchRequest(
-        1,
+        BEAM_BATCH_PROTOCOL_VERSION,
         "request-1",
         (BeamBatchItem(0, native),),
         BeamBatchParams(2, 3, 0.0, (20,), False),
@@ -96,7 +97,10 @@ def _case(
         BeamOutputSequence((5, 20) if include_stop else (5,), -2.5, (), "stop", 20),
     )
     result = BeamBatchResult(
-        1, "request-1", BeamBatchOutput((BeamRequestOutput(0, "request-1", sequences),)), None
+        BEAM_BATCH_PROTOCOL_VERSION,
+        "request-1",
+        BeamBatchOutput((BeamRequestOutput(0, "request-1", sequences),)),
+        None,
     )
     return BeamSearchOutputProcessor(tokenizer), call, request, result, tokenizer
 
@@ -133,7 +137,7 @@ def test_output_boundaries_and_lazy_materialization(
         assert beam.finish_reason == ("length" if i == 0 else "stop")
         assert beam.stop_reason == (None if i == 0 else 20)
     assert tokenizer.decode_calls == 2
-    assert request.items[0].request.prompt_token_ids == prefix
+    assert request.items[0].request.prompt_token_ids.tolist() == prefix
 
 
 @pytest.mark.parametrize("operation", [copy.copy, replace, asdict])  # type: ignore[misc]
@@ -181,10 +185,10 @@ def test_item_order_and_empty_outputs() -> None:
     assert result.output is not None
     first = result.output.items[0]
     second_native = copy.copy(request.items[0].request)
-    second_native.prompt_token_ids = [7, 8, 10]
+    second_native.prompt_token_ids = np.array([7, 8, 10], dtype=np.int64)
     second_native.cache_salt = "second"
     request2 = BeamBatchRequest(
-        1,
+        BEAM_BATCH_PROTOCOL_VERSION,
         "batch",
         (*request.items, BeamBatchItem(1, second_native)),
         request.beam_params,
@@ -195,12 +199,12 @@ def test_item_order_and_empty_outputs() -> None:
     )
     output = BeamBatchOutput((BeamRequestOutput(1, "second", first.sequences), first))
     converted = processor.process_outputs(
-        call2, request2, BeamBatchResult(1, "batch", output, None)
+        call2, request2, BeamBatchResult(BEAM_BATCH_PROTOCOL_VERSION, "batch", output, None)
     )
     assert converted[0].sequences[0].tokens == [7, 8, 10, 3, 4, 20]
     assert converted[0].sequences[0].orig_prompt["cache_salt"] == "second"
     assert converted[1].sequences[0].tokens == [1, 2, 10, 3, 4, 20]
-    empty = BeamBatchResult(1, "batch", BeamBatchOutput(()), None)
+    empty = BeamBatchResult(BEAM_BATCH_PROTOCOL_VERSION, "batch", BeamBatchOutput(()), None)
     assert processor.process_outputs(call2, request2, empty) == []
 
 
@@ -208,7 +212,9 @@ def test_failure_and_invalid_boundary_preserve_error_contract() -> None:
     processor, call, request, result, _ = _case()
     failure = BeamBatchFailure("expected_failure", "expected", None)
     with pytest.raises(BeamSearchEngineError, match="expected"):
-        processor.process_outputs(call, request, BeamBatchResult(1, "batch", None, failure))
+        processor.process_outputs(
+            call, request, BeamBatchResult(BEAM_BATCH_PROTOCOL_VERSION, "batch", None, failure)
+        )
     call.params.end_token = "invalid"
     with pytest.raises(BeamSearchEngineError, match="end_token must be a valid") as exc:
         processor.process_outputs(call, request, result)
@@ -258,15 +264,15 @@ def test_compact_matches_full_tail_scores_and_stop_metadata(
 
 
 def test_compact_does_not_copy_prompt_or_decode_text_per_beam() -> None:
-    class CountedPrompt(list[int]):
+    class CountedPrompt(np.ndarray[Any, np.dtype[np.int64]]):  # type: ignore[misc]
         reads = 0
 
-        def __iter__(self) -> Iterator[int]:
+        def tolist(self) -> list[int]:
             self.reads += 1
-            return super().__iter__()
+            return cast(list[int], super().tolist())
 
     processor, call, request, result, tokenizer = _case(None, None)
-    prompt = CountedPrompt(range(1024))
+    prompt = np.arange(1024, dtype=np.int64).view(CountedPrompt)
     request.items[0].request.prompt_token_ids = prompt
     sequences = tuple(
         BeamOutputSequence((3, 4, i), -float(i), (), "length", None) for i in range(256)
@@ -276,6 +282,7 @@ def test_compact_does_not_copy_prompt_or_decode_text_per_beam() -> None:
     )
     compact = processor.process_outputs(replace(call, output_mode="compact"), request, result)[0]
     assert prompt.reads == 1
+    assert compact.prompt_token_ids == tuple(range(1024))
     assert tokenizer.decode_calls == 0
     assert len(compact.sequences) == 256
     assert all(len(seq.token_ids) == 3 for seq in compact.sequences)
@@ -285,7 +292,7 @@ def test_compact_does_not_copy_prompt_or_decode_text_per_beam() -> None:
 def test_compact_empty_candidates_and_request_order() -> None:
     processor, call, request, result, tokenizer = _case(None, None)
     second = copy.copy(request.items[0].request)
-    second.prompt_token_ids = [7, 8]
+    second.prompt_token_ids = np.array([7, 8], dtype=np.int64)
     request = BeamBatchRequest(
         request.protocol_version,
         request.batch_id,

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Annotated, Literal, NoReturn, TypeGuard
 
 import msgspec
+import numpy as np
 from vllm.v1.engine import EngineCoreRequest
 
 from vllm_gr.config import (
@@ -24,7 +25,7 @@ from vllm_gr.config import (
     SUPPORTED_BEAM_BATCH_SIZES,
 )
 
-BEAM_BATCH_PROTOCOL_VERSION = 1
+BEAM_BATCH_PROTOCOL_VERSION = 2
 DEFAULT_CONSTRAINT_RESOURCE_ID = "default"
 # Terminal failure code for a request the engine refused before the session
 # started. It is the one code the frontend reports as a client error; every
@@ -40,6 +41,16 @@ class BeamContractError(ValueError):
     """Raised when a Beam batch value violates the contract."""
 
 
+class BeamEngineCoreRequest(EngineCoreRequest):
+    """GR native request with one canonical ndarray prompt wire field."""
+
+    prompt_token_ids: np.ndarray  # type: ignore[assignment,type-arg]
+
+    def __post_init__(self) -> None:
+        if self.external_req_id is None:
+            self.external_req_id = self.request_id
+
+
 class BeamBatchItem(
     msgspec.Struct,
     array_like=True,  # type: ignore[call-arg]
@@ -48,8 +59,22 @@ class BeamBatchItem(
     gc=False,
 ):  # type: ignore[call-arg]
     item_index: int
-    request: EngineCoreRequest
+    request: BeamEngineCoreRequest
     trie_id: int = 0
+
+    def __post_init__(self) -> None:
+        # Existing frontend/native input processors may still produce lists.
+        # Convert exactly once when crossing into the GR request contract.
+        if isinstance(self.request, EngineCoreRequest) and not isinstance(
+            self.request, BeamEngineCoreRequest
+        ):
+            values = {
+                name: getattr(self.request, name) for name in EngineCoreRequest.__struct_fields__
+            }
+            if values["prompt_token_ids"] is not None:
+                values["prompt_token_ids"] = np.asarray(values["prompt_token_ids"], dtype=np.int64)
+            converted = BeamEngineCoreRequest(**values)
+            msgspec.structs.force_setattr(self, "request", converted)
 
 
 class BeamBatchParams(
@@ -380,7 +405,7 @@ def _validate_beam_params(params: BeamBatchParams) -> None:
         seen_stop_ids.add(normalized)
     if params.constraint_resource_id != DEFAULT_CONSTRAINT_RESOURCE_ID:
         _fail(
-            "Beam batch protocol version 1 only admits "
+            f"Beam batch protocol version {BEAM_BATCH_PROTOCOL_VERSION} only admits "
             f"constraint_resource_id={DEFAULT_CONSTRAINT_RESOURCE_ID!r}"
         )
 
@@ -446,6 +471,16 @@ def validate_beam_batch_request(request: BeamBatchRequest) -> None:
         if request_id in request_ids:
             _fail("item request_id values must be unique within a batch")
         request_ids.add(request_id)
+        tokens = item.request.prompt_token_ids
+        if (
+            not isinstance(tokens, np.ndarray)
+            or tokens.dtype != np.int64
+            or tokens.ndim != 1
+            or not tokens.flags.c_contiguous
+            or tokens.size == 0
+            or tokens.min() < 0
+        ):
+            _fail("GR prompt_token_ids must be a nonempty contiguous nonnegative int64 array")
         if item.request.sampling_params is None:
             _fail("Beam batch items require sampling_params")
         if item.request.pooling_params is not None:
@@ -606,6 +641,7 @@ __all__ = [
     "BeamBatchRequest",
     "BeamBatchResult",
     "BeamContractError",
+    "BeamEngineCoreRequest",
     "BeamOutputOptions",
     "BeamOutputSequence",
     "BeamRequestOutput",

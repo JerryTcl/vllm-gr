@@ -163,6 +163,13 @@ def apply_engine_core_request_patches() -> None:
     logger.info("[vllm-gr] apply_engine_core_child_patches called.")
 
     register_engine_core_request_types()
+    from vllm_gr.v1.beam.token_buffer import (
+        install_numpy_request_factory,
+        install_numpy_scheduler_data,
+    )
+
+    install_numpy_request_factory()
+    install_numpy_scheduler_data()
 
     EngineCore.__init__ = make_patched_engine_init(EngineCore.__init__)
 
@@ -910,6 +917,10 @@ def apply_kv_hash_memo_patch() -> None:
     def hash_block_tokens_memo(
         hash_function, parent_block_hash, curr_block_token_ids, extra_keys=None
     ):
+        import numpy as np
+
+        if isinstance(curr_block_token_ids, np.ndarray):
+            curr_block_token_ids = tuple(map(int, curr_block_token_ids))
         if _CHAIN_FALLBACK_ACTIVE:
             # Chain-memo miss in flight: hash at stock speed (see
             # _CHAIN_FALLBACK_ACTIVE).
@@ -995,8 +1006,14 @@ def _apply_block_hash_chain_memo_patch(kv_cache_utils) -> None:
 
             # Only the full-block prefix participates in hashing; trailing
             # partial-block tokens never reach hash_block_tokens.
-            tokens = tuple(request.all_token_ids[: num_full_blocks * block_size])
-            key = (caching_hash_fn, block_size, tokens)
+            import numpy as np
+
+            prefix = request.all_token_ids[: num_full_blocks * block_size]
+            # Array memo keys stay compact; cold hashing materializes Python
+            # integers one block at a time to preserve native cache identity.
+            array_tokens = isinstance(prefix, np.ndarray)
+            tokens = prefix if array_tokens else tuple(prefix)
+            key = (caching_hash_fn, block_size, tokens.tobytes() if array_tokens else tokens)
             hit = chain_memo.get(key)
             if hit is not None:
                 return list(hit)
@@ -1013,7 +1030,9 @@ def _apply_block_hash_chain_memo_patch(kv_cache_utils) -> None:
                         caching_hash_fn(
                             (
                                 parent_hash or kv_cache_utils.NONE_HASH,
-                                tokens[start : start + block_size],
+                                tuple(map(int, tokens[start : start + block_size]))
+                                if array_tokens
+                                else tokens[start : start + block_size],
                                 None,
                             )
                         )

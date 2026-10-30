@@ -235,7 +235,11 @@ def validate_gr_request(
     for item in request.items:
         native = item.request
         params = native.sampling_params
-        if native.prompt_embeds is not None or not native.prompt_token_ids:
+        if (
+            native.prompt_embeds is not None
+            or native.prompt_token_ids is None
+            or len(native.prompt_token_ids) == 0
+        ):
             raise ValueError("beam_search_v1 requires a nonempty token prompt")
         if native.mm_features or native.lora_request is not None:
             raise ValueError("beam_search_v1 does not support multimodal inputs or LoRA")
@@ -565,7 +569,8 @@ def validate_dispatch(
                 native = new_requests[request_id]
                 if (
                     m.kind is GRStageKind.DECODE
-                    or len(native.prompt_token_ids or ()) != prompt_tokens
+                    or (len(native.prompt_token_ids) if native.prompt_token_ids is not None else 0)
+                    != prompt_tokens
                 ):
                     raise ValueError("GR native request identity or prompt geometry changed")
                 computed = native.num_computed_tokens
@@ -635,7 +640,12 @@ def validate_dispatch(
                 or request.batch_id != key
                 or tuple(item.item_index for item in request.items) != tuple(range(view.batch_size))
                 or tuple(item.request.request_id for item in request.items) != view.request_ids
-                or tuple(len(item.request.prompt_token_ids or ()) for item in request.items)
+                or tuple(
+                    len(item.request.prompt_token_ids)
+                    if item.request.prompt_token_ids is not None
+                    else 0
+                    for item in request.items
+                )
                 != view.num_prompt_tokens_by_request
                 or request.beam_params != params
                 or request.output_options != m.output_options

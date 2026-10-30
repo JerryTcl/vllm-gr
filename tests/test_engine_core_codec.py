@@ -7,8 +7,10 @@ from __future__ import annotations
 from typing import Any
 
 import msgspec
+import numpy as np
 import pytest
 from vllm.v1.engine import EngineCoreRequest, EngineCoreRequestType
+from vllm.v1.serial_utils import MsgpackEncoder
 
 from tests.test_gr_async_scheduler import _batch_request
 from vllm_gr.v1.beam.batch_contracts import BeamBatchItem, BeamBatchRequest
@@ -21,8 +23,8 @@ from vllm_gr.v1.engine.wire import register_engine_core_request_types
 register_engine_core_request_types()
 
 
-def _frames(payload: Any) -> list[bytes]:
-    return [msgspec.msgpack.encode(payload)]
+def _frames(payload: Any) -> list[Any]:
+    return list(MsgpackEncoder().encode(payload))
 
 
 def test_decoders_share_oob_tensor_provider() -> None:
@@ -48,12 +50,22 @@ def test_decode_whole_gr_batch(batch_size: int) -> None:
         build_engine_core_decoders(None), EngineCoreRequestType.SUBMIT_GR_SESSION, _frames(source)
     )
     assert isinstance(decoded, BeamBatchRequest)
-    assert decoded == source
-    assert all(isinstance(item.request, EngineCoreRequest) for item in decoded.items)
+    assert [bytes(frame) for frame in _frames(decoded)] == [
+        bytes(frame) for frame in _frames(source)
+    ]
+    for original, item in zip(source.items, decoded.items, strict=True):
+        assert isinstance(item.request, EngineCoreRequest)
+        tokens = item.request.prompt_token_ids
+        assert isinstance(tokens, np.ndarray) and tokens.dtype == np.int64
+        assert tokens.flags.c_contiguous
+        np.testing.assert_array_equal(tokens, original.request.prompt_token_ids)
 
 
 def test_native_add_payload() -> None:
-    request = _batch_request().items[0].request
+    source = _batch_request().items[0].request
+    values = {name: getattr(source, name) for name in EngineCoreRequest.__struct_fields__}
+    values["prompt_token_ids"] = source.prompt_token_ids.tolist()
+    request = EngineCoreRequest(**values)
     decoded = decode_engine_core_payload(
         build_engine_core_decoders(None), EngineCoreRequestType.ADD, _frames(request)
     )

@@ -306,7 +306,7 @@ def test_offline_inputs_preserve_caller_formed_batch_order(batch_size: int) -> N
 
     assert len(request.items) == batch_size
     assert [item.item_index for item in request.items] == list(range(batch_size))
-    assert [item.request.prompt_token_ids for item in request.items] == prompts
+    assert [item.request.prompt_token_ids.tolist() for item in request.items] == prompts
     assert request.batch_id == request.items[0].request.request_id
     assert len({item.request.request_id for item in request.items}) == batch_size
 

@@ -530,3 +530,37 @@ def test_engine_dead_propagates_and_ends_async_cleanup(operation: str) -> None:
         assert _ASYNC_CLEANUP_TASKS == before
 
     asyncio.run(run())
+
+
+def test_engine_only_client_reuses_session_methods() -> None:
+    from vllm_gr.entrypoints.beam_search_v1.client import AsyncBeamSearchClient
+    from vllm_gr.v1.beam.batch_contracts import BeamBatchResult
+
+    async def run() -> None:
+        result = BeamBatchResult(
+            protocol_version=BEAM_BATCH_PROTOCOL_VERSION, batch_id="id", output=None, failure=None
+        )
+        engine = SimpleNamespace(
+            submit_gr_session=AsyncMock(return_value="handle"),
+            wait_gr_session=AsyncMock(return_value=result),
+            release_gr_session=AsyncMock(),
+            abort_gr_session=AsyncMock(),
+        )
+        client = AsyncBeamSearchClient(engine_client=engine)
+        request = SimpleNamespace(
+            batch_id="id",
+            items=[
+                SimpleNamespace(
+                    request=SimpleNamespace(data_parallel_rank=None),
+                )
+            ],
+        )
+        session = await client.submit_once(request)
+        assert await client.wait_final(session) is result
+        await client.close(session)
+        engine.release_gr_session.assert_awaited_once_with("id")
+        engine.abort_gr_session.assert_not_called()
+        with pytest.raises(ValueError, match="prepared"):
+            await client.prepare_request(None)
+
+    asyncio.run(run())

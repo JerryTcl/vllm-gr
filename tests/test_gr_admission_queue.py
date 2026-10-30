@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import msgspec
+import numpy as np
 import pytest
 from vllm.utils.hashing import sha256
 from vllm.v1.core import kv_cache_utils
@@ -48,7 +49,7 @@ def batch(name, *, prompt=7, n=3, client=3):
     result = _batch_request(n)
     request = result.items[0].request
     request.request_id = name
-    request.prompt_token_ids = [1] * prompt
+    request.prompt_token_ids = np.full(prompt, 1, dtype=np.int64)
     request.client_index = client
     return msgspec.structs.replace(result, batch_id=name)
 
@@ -225,7 +226,7 @@ def test_rejected_queued_gr_add_returns_error_then_valid_request_completes(core,
     if rejection == "kv_capacity":
         # Keep the model-length limit larger than the total physical KV pool.
         core.scheduler.kv_cache_manager.max_model_len = 256
-        bad.items[0].request.prompt_token_ids = [1] * 129
+        bad.items[0].request.prompt_token_ids = np.full(129, 1, dtype=np.int64)
     else:
         params = msgspec.structs.replace(
             bad.beam_params, **({"beam_width": 8} if rejection == "width" else {"max_tokens": 4})

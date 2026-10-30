@@ -32,11 +32,18 @@ classifiers = [
 # See README.md for platform installation instructions.
 
 [project.optional-dependencies]
+grpc = [
+    "grpcio>=1.84.0,<2",
+    "protobuf>=7.35.1,<8",
+    "smg-grpc-proto==0.4.6",
+    "smg-grpc-servicer==0.5.2",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-timeout",
     "pytest-cov>=4.0.0",
+    "types-protobuf",
     "tblib",
     "black",
     "ruff",
@@ -70,6 +77,7 @@ include = ["vllm_gr*"]
 
 [tool.setuptools.package-data]
 "vllm_gr" = ["_version.py", "*.json"]
+"vllm_gr.entrypoints.grpc" = ["proto/*.proto"]
 
 [tool.setuptools_scm]
 fallback_version = "0.22.1"
@@ -86,6 +94,7 @@ line-length = 100
 target-version = ['py311', 'py312', 'py313']
 
 [tool.ruff]
+extend-exclude = ["vllm_gr/entrypoints/grpc/generated"]
 line-length = 100
 target-version = "py311"
 
@@ -93,6 +102,7 @@ target-version = "py311"
 strict = true
 
 [tool.typos.default.extend-identifiers]
+image_grid_thw = "image_grid_thw"
 _get_cumsum_and_arange = "_get_cumsum_and_arange"
 CANN = "CANN"
 arange_np = "arange_np"

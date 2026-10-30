@@ -32,7 +32,10 @@ def worker_input(scheduled: Any) -> Any:
     for request in scheduled.scheduled_new_reqs:
         owned = _copy_record(request)
         owned.block_ids = tuple(list(group) for group in request.block_ids)
-        owned.prompt_token_ids = list(request.prompt_token_ids)
+        owned.prompt_token_ids = request.prompt_token_ids.copy()
+        prefill = getattr(request, "prefill_token_ids", None)
+        if prefill is not None:
+            owned.prefill_token_ids = prefill.copy()
         # Native SamplingParams retains flat scalar containers and optional
         # nested parameters. Detach both; remaining fields are immutable scalars.
         # clone() is shallow when skip_clone=True. A shared memo preserves

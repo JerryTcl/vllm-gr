@@ -180,11 +180,12 @@ def test_request_uses_engine_request_identity_and_beam_params_authority() -> Non
         validate_beam_batch_request(duplicate)
 
 
-def test_request_keeps_engine_core_input_generic() -> None:
+def test_request_rejects_embedding_only_prompt() -> None:
     engine_request = _engine_request("request-0", None)
     engine_request.prompt_embeds = torch.ones((2, 8), dtype=torch.float32)
     request = _request(items=(BeamBatchItem(0, engine_request),))
-    validate_beam_batch_request(request)
+    with pytest.raises(BeamContractError, match="nonempty contiguous nonnegative int64"):
+        validate_beam_batch_request(request)
 
 
 @pytest.mark.parametrize("bad_value", [0, -1, True, 1025])  # type: ignore[misc]
@@ -375,10 +376,12 @@ def test_result_is_output_xor_failure_and_compact_shortfall_is_normal() -> None:
             for item in request.items
         )
     )
-    validate_beam_batch_result(BeamBatchResult(1, request.batch_id, empty_output, None))
+    validate_beam_batch_result(
+        BeamBatchResult(BEAM_BATCH_PROTOCOL_VERSION, request.batch_id, empty_output, None)
+    )
 
     both = BeamBatchResult(
-        1,
+        BEAM_BATCH_PROTOCOL_VERSION,
         request.batch_id,
         empty_output,
         BeamBatchFailure("MODEL_FAILURE", "failed", None),
@@ -408,7 +411,9 @@ def test_terminal_result_honors_score_and_lineage_options() -> None:
         request,
         SimpleNamespace(
             kv_transfer_params={
-                "gr_batch_result": BeamBatchResult(1, request.batch_id, output, None)
+                "gr_batch_result": BeamBatchResult(
+                    BEAM_BATCH_PROTOCOL_VERSION, request.batch_id, output, None
+                )
             }
         ),
     )
@@ -489,7 +494,9 @@ def test_result_rejects_invalid_finish_reason_and_bad_length_output() -> None:
         (BeamRequestOutput(0, "request-0", (invalid,)),) + _success(request).output.items[1:]
     )
     with pytest.raises(BeamContractError, match="finish_reason"):
-        validate_beam_batch_result(BeamBatchResult(1, request.batch_id, output, None))
+        validate_beam_batch_result(
+            BeamBatchResult(BEAM_BATCH_PROTOCOL_VERSION, request.batch_id, output, None)
+        )
 
     short = BeamOutputSequence((1,), -1.0, (0,), "length", None)
     output = BeamBatchOutput(
@@ -500,7 +507,9 @@ def test_result_rejects_invalid_finish_reason_and_bad_length_output() -> None:
             request,
             SimpleNamespace(
                 kv_transfer_params={
-                    "gr_batch_result": BeamBatchResult(1, request.batch_id, output, None)
+                    "gr_batch_result": BeamBatchResult(
+                        BEAM_BATCH_PROTOCOL_VERSION, request.batch_id, output, None
+                    )
                 }
             ),
         )
@@ -538,7 +547,7 @@ def test_failure_item_index_is_context_checked(
         )
     )
     result = BeamBatchResult(
-        1,
+        BEAM_BATCH_PROTOCOL_VERSION,
         request.batch_id,
         None,
         BeamBatchFailure("no_valid_beams", "No valid final Beam candidates", item_index),
@@ -557,7 +566,10 @@ def test_production_codec_round_trips_request_and_terminal_result() -> None:
     result = _success(request)
     frames = MsgpackEncoder().encode(request)
     decoded = build_engine_core_decoders(None).submit_gr_session.decode(frames)
-    assert decoded == request
+    encoder = MsgpackEncoder()
+    assert [bytes(frame) for frame in encoder.encode(decoded)] == [
+        bytes(frame) for frame in encoder.encode(request)
+    ]
     validate_beam_batch_request(decoded)
     wire_result = MsgpackDecoder().decode(MsgpackEncoder().encode(result))
     assert (
@@ -582,7 +594,7 @@ def test_per_parent_widths_preserve_existing_candidate_width_wire_position() -> 
 
 
 def test_production_codec_preserves_nested_engine_request_tensor_frames() -> None:
-    engine_request = _engine_request("request-0", None)
+    engine_request = _engine_request("request-0", [1, 2])
     engine_request.prompt_embeds = torch.arange(256, dtype=torch.float32).reshape(2, 128)
     request = _request(items=(BeamBatchItem(0, engine_request),))
     decoded = build_engine_core_decoders(None).submit_gr_session.decode(

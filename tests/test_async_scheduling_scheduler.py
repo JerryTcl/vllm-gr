@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import msgspec
+import numpy as np
 import pytest
 import torch
 from vllm.config import CacheConfig, ModelConfig, SchedulerConfig, VllmConfig
@@ -50,6 +51,13 @@ def scheduler(tmp_path, request):
     from vllm_gr.v1.engine.engine_core_patch import apply_scheduler_patch
 
     apply_scheduler_patch()
+    from vllm_gr.v1.beam.token_buffer import (
+        install_numpy_request_factory,
+        install_numpy_scheduler_data,
+    )
+
+    install_numpy_request_factory()
+    install_numpy_scheduler_data()
     (tmp_path / "config.json").write_text(
         json.dumps(
             {
@@ -105,7 +113,7 @@ def scheduler(tmp_path, request):
 def add(scheduler, name, prompt=7, n=3):
     batch = _batch_request(n)
     batch.items[0].request.request_id = name
-    batch.items[0].request.prompt_token_ids = [1] * prompt
+    batch.items[0].request.prompt_token_ids = np.full(prompt, 1, dtype=np.int64)
     batch.items[0].request.sampling_params.ignore_eos = True
     batch.items[0].request.sampling_params.stop_token_ids = []
     batch = msgspec.structs.replace(batch, batch_id=name)
@@ -513,7 +521,7 @@ def test_worker_input_isolates_retained_nested_objects(scheduler):
     owned.sampling_params.retained_metadata["values"].append(2)
     assert scheduled.num_scheduled_tokens == {"A": 7}
     assert not scheduled.finished_req_ids
-    assert native.prompt_token_ids == [1] * 7
+    np.testing.assert_array_equal(native.prompt_token_ids, np.ones(7, dtype=np.int64))
     assert native.sampling_params.max_tokens == 3
     assert native.sampling_params.stop_token_ids == [2]
     assert native.sampling_params.stop == ["yes"]

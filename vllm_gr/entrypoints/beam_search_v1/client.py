@@ -211,13 +211,17 @@ class BeamSearchClient:
 class AsyncBeamSearchClient:
     """Online A2 adapter using the same request and EngineCore session ID."""
 
-    def __init__(self, serving: Any) -> None:
+    def __init__(self, serving: Any = None, *, engine_client: Any = None) -> None:
+        if (serving is None) == (engine_client is None):
+            raise ValueError("provide exactly one of serving or engine_client")
         self.serving = serving
-        self.engine = serving.engine_client
+        self.engine = serving.engine_client if serving is not None else engine_client
         self._boundary_tokens: tuple[str, tuple[int | None, int | None]] | None = None
         self._close_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def prepare_request(self, call: OnlineBeamSearchRequest) -> BeamBatchRequest:
+        if self.serving is None:
+            raise ValueError("engine-only client accepts prepared BeamBatchRequest inputs")
         processor = BeamSearchInputProcessor(self.engine)
         request = await processor.process_online_inputs(self.serving, call)
         self._boundary_tokens = (request.batch_id, processor.boundary_token_ids)
@@ -301,6 +305,8 @@ class AsyncBeamSearchClient:
     ) -> list[Any]:
         if result.failure is not None:
             raise failure_exception(result.failure)
+        if self.serving is None:
+            raise ValueError("engine-only client returns raw BeamBatchResult outputs")
         tokenizer = self.serving.input_processor.tokenizer
         if tokenizer is None:
             raise VLLMValidationError(

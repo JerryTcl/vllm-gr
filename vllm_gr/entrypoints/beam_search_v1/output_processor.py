@@ -71,7 +71,7 @@ def _prompt_boundaries(
         else:
             original = prepared
         prepared_prompts.append(prepared)
-        original_prompts.append(original)
+        original_prompts.append(original.tolist())
     return prepared_prompts, original_prompts, begin_token_id, end_token_id
 
 
@@ -94,9 +94,9 @@ def _can_share_prompt_decode(tokenizer: Any, prepared_prompt: Sequence[int]) -> 
             isinstance(tokenizer, Qwen2TokenizerFast)
             and isinstance(tokenizer.backend_tokenizer.decoder, ByteLevel)
             and not tokenizer.clean_up_tokenization_spaces
-            and prepared_prompt
+            and len(prepared_prompt) > 0
         ):
-            final_prompt_token = tokenizer.convert_ids_to_tokens(prepared_prompt[-1])
+            final_prompt_token = tokenizer.convert_ids_to_tokens(int(prepared_prompt[-1]))
             return bool(final_prompt_token) and final_prompt_token.isascii()
     except (AttributeError, ImportError):
         pass
@@ -118,13 +118,15 @@ class _V1BeamTailMaterializer:
         from vllm.entrypoints.generate.beam_search.utils import BeamSearchSequence
 
         suffix = beam.__dict__.pop("_v1_suffix")
-        full = list(self._prepared)
+        full = (
+            self._prepared.tolist() if hasattr(self._prepared, "tolist") else list(self._prepared)
+        )
         full.extend(suffix)
         if self._shared_prompt is None:
             self._shared_prompt = _can_share_prompt_decode(self._tokenizer, self._prepared)
         if self._shared_prompt:
             if self._prompt_text is None:
-                self._prompt_text = fast_decode(self._tokenizer, self._prepared)
+                self._prompt_text = fast_decode(self._tokenizer, self._prepared.tolist())
             text = self._prompt_text + fast_decode(self._tokenizer, suffix)
         else:
             text = fast_decode(self._tokenizer, full)

@@ -350,12 +350,16 @@ jobs:
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
           export VLLM_GR_TARGET_DEVICE="${VLLM_GR_TARGET_DEVICE:-cuda}"
-          uv pip install -e ".[dev]"
+          uv pip install -e ".[dev,grpc]"
 
       - name: Refresh editable installation
         run: |
           export VLLM_GR_TARGET_DEVICE="${VLLM_GR_TARGET_DEVICE:-cuda}"
-          uv pip install -e ".[dev]"
+          uv pip install -e ".[dev,grpc]"
+
+      - name: Verify gRPC runtime dependencies
+        run: |
+          python -c 'from vllm_gr.entrypoints.grpc.generated import vllm_engine_pb2, vllm_engine_pb2_grpc; from vllm_gr.entrypoints.grpc.serving import BeamVllmEngineServicer'
 
       - name: Verify vLLM compatibility
         run: |

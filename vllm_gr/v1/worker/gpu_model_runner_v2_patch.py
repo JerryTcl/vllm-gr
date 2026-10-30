@@ -136,6 +136,9 @@ def _apply_v2_runner_patches() -> None:
     Backend load wrapper last, so the final ``load_model`` carries the
     constraint marker that the V2 validation gate checks.
     """
+    from vllm_gr.v1.worker.numpy_staging import install_numpy_staging
+
+    install_numpy_staging()
     runners_to_patch = [
         (runner_name, runner_class)
         for runner_name, runner_class in discover_worker_runners()

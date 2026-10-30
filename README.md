@@ -55,6 +55,8 @@ documented in [benchmarks/qwen/README.md](benchmarks/qwen/README.md).
   for the full configuration reference.
 - Please refer to [offline inference](examples/offline_inference/beam_search/README.md) for offline beam search example.
 - Please refer to [online inference](examples/online_serving/beam_search/README.md) for online inference example.
+- For gRPC beam generation with binary token inputs, see the
+  [gRPC and NumPy upgrade guide](docs/grpc_numpy_upgrade.md).
 
 ## NPU Serving with Constraint Tables
 

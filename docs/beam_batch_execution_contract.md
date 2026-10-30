@@ -33,7 +33,7 @@ scheduler or Worker loop.
 - `sequence`: one returned candidate;
 - `parent_beam_index`: the logical Beam producing a candidate.
 
-Request and Result carry `protocol_version == 1` and the same `batch_id`.
+Request and Result carry `protocol_version == 2` and the same `batch_id`.
 Native `EngineCoreRequest.request_id` identifies each item. A retry uses a new
 batch identity; execution ownership and dispatch generations remain runtime
 state, not additional public request fields.
@@ -44,7 +44,7 @@ All frontend, EngineCore, and Worker processes participating in Beam execution
 must use the same code and schema revision. Stop and restart these processes as
 one deployment; mixed-revision operation and rolling upgrades are unsupported
 for both fixed-width and dynamic-width Beam requests. A matching
-`protocol_version == 1` alone does not establish schema compatibility.
+`protocol_version == 2` alone does not establish schema compatibility.
 
 `BeamBatchParams` uses an array-like MsgPack struct with strict unknown-field
 validation. Its appended `dynamic_beam_widths`, `candidate_width`, and
@@ -55,12 +55,24 @@ fixed-width request. Supporting rolling upgrades would
 require capability negotiation and compatible encoding, not just a protocol
 number change or relaxing validation.
 
+### NumPy token representation
+
+Schema version 2 uses one-dimensional, contiguous CPU int64 arrays for GR
+prompts. BeamBatchItem normalizes legacy list inputs at the boundary; execution
+retains arrays through Core, scheduler and Worker. Native non-GR ADD messages
+keep the original schema. See the [upgrade guide](grpc_numpy_upgrade.md) for
+ownership rules, deployment requirements and performance measurements.
+
 ### Request
 
 ```python
+class BeamEngineCoreRequest(EngineCoreRequest):
+    prompt_token_ids: np.ndarray
+
+
 class BeamBatchItem:
     item_index: int
-    request: EngineCoreRequest
+    request: BeamEngineCoreRequest
 
 
 class BeamBatchParams:
