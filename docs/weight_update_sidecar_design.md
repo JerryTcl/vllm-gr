@@ -13,40 +13,49 @@ on every worker. GPU count alone must not be used to infer service endpoints.
 
 ## Data and control flow
 
-The sidecar performs the following steps. Both checkpoint discovery and validation
-use the configured `FileSystem` implementation; the rollout is storage-independent.
+The sidecar owns the outer update loop. It prepares a checkpoint before sending
+HTTP control requests to the GR service instances. Storage access is provided by
+pluggable `FileSystem` implementations: HDFS first, with P2P and others added later.
 
 <img src="assets/weight_update_sidecar_flow.svg" alt="Weight update sidecar flow" width="650">
 
-`N` is the total configured instance count (commonly 8). `n` is the maximum
-update group size, not the total instance count. When `n=1`, each group contains
-only one instance; the branches above illustrate the configurable parallel case.
-This design waits for each group before starting the next one. Failed instances
-retain their update slots until recovery succeeds.
+The flow follows the stages shown above:
 
-Each selected instance executes step 4 independently and strictly in this order:
+1. **Check update:** discover a newly published checkpoint through `FileSystem`.
+   If no update is available, wait for the next poll.
+2. **Download:** fetch the checkpoint once into a temporary directory on the Pod's
+   shared volume. No service instance is paused during the download.
+3. **Check valid:** verify the downloaded files against the manifest, including
+   completeness, sizes, checksums, and compatibility with the running model. Only
+   a valid checkpoint is published as an immutable local directory for rollout.
+4. **Reload Process:** roll out the local checkpoint to Node 1, Node 2, and the
+   remaining configured instances using HTTP control requests. For each instance,
+   execute **Pause/Drain -> Reload -> Resume/Warmup** in that order.
 
-```mermaid
-flowchart TD
-    P["4. Pause<br/>Close business admission and drain"] --> L["Reload<br/>Load weights and refresh derived state"]
-    L --> R["Resume<br/>Resume scheduling; admission stays closed"]
-    R --> W["Warmup<br/>Execute real GR requests and validate"]
-    W -->|Success| READY["Publish serving version<br/>Reopen business admission"]
-```
+`Node` in the diagram means one GR service instance, not a physical host. `N` is
+its total configured count (commonly 8). Update at most `n` instances in each
+rolling group, controlled by `max_concurrent_updates` (default 1, range 1 to N).
+Finish the
+current group before starting the next; instances outside the group keep serving.
 
-An update slot covers the entire pause/reload/resume/warmup sequence. The default
-`max_concurrent_updates` is 1; valid values are 1 through the number of instances.
-Each instance executes the steps strictly in order. Instances outside these slots
-continue serving. A rolling update temporarily serves different weight versions;
-cross-instance atomic switching is outside this scope.
+Within each instance, Pause/Drain closes business admission and waits for accepted
+requests to finish. Reload loads the checkpoint on every worker and refreshes
+weight-dependent state internally. Resume/Warmup first resumes scheduling, then
+executes warmup requests while business admission stays closed. Only a successful
+warmup publishes the serving version and reopens admission. The diagram groups
+Resume/Warmup as one phase; the control API exposes resume and warmup separately.
+
+An update slot covers the entire instance lifecycle, including recovery. Failed
+instances retain their slots until recovery succeeds. Rolling updates temporarily
+serve different weight versions; cross-instance atomic switching is outside scope.
 
 ## Sidecar responsibilities
 
-### Discovery and download
+### Check update, download, and check valid
 
-Keep storage-specific behavior behind a small `FileSystem` interface. Discovery
-checks for updates; validation downloads through this interface and verifies the
-manifest, file sizes and checksums before making a checkpoint eligible for rollout:
+Keep discovery and download behind a small `FileSystem` interface. The controller
+then runs a common local validation step, so HDFS, P2P, and future implementations
+share the same checkpoint validity rules:
 
 ```python
 class FileSystem(Protocol):
@@ -65,15 +74,17 @@ Discovery only returns published versions; directory modification time is not a
 completion signal. This publication convention is a deployment prerequisite.
 
 The sidecar downloads once into a shared volume visible at the same path to all
-instances. It checks completeness and checksums, then atomically renames the
+instances. The Check valid stage checks completeness, checksums, and model
+compatibility before the controller atomically renames the
 temporary directory to a versioned directory on the same filesystem. Published
 directories are immutable. Failed downloads never trigger pause. Keep the current
 and previous checkpoint until all instances finish and retention permits cleanup.
 Storage credentials belong to the FileSystem deployment, not service requests.
 
-### Rollout management
+### Reload Process and rolling update
 
-Configure explicit instance IDs and control endpoints. Persist each instance's
+After Check valid succeeds, enter Reload Process. Configure explicit instance IDs
+and HTTP control endpoints for Node 1 through Node N. Persist each instance's
 target version, last verified serving version, operation ID, phase, and error in
 the shared volume. Query server state after a sidecar restart instead of blindly
 repeating calls. Allow only one rollout coordinator per Pod.
@@ -193,7 +204,7 @@ instances:
 ```
 
 ```python
-async def update_instance(instance, checkpoint, operation_id):
+async def reload_instance(instance, checkpoint, operation_id):
     # Slot remains reserved until success or verified recovery.
     await instance.pause(operation_id, mode="wait")
     await instance.reload_weights(operation_id, checkpoint.local_path,
@@ -205,10 +216,13 @@ async def update_instance(instance, checkpoint, operation_id):
 async def reconcile():
     await recover_rollout_state()
     while True:
-        checkpoint = await filesystem.discover(config.watch_uri)
+        checkpoint = await filesystem.discover(config.watch_uri)  # Check update
         if checkpoint is not None and needs_rollout(checkpoint):
-            local = await download_validate_and_publish(checkpoint)
-            await rollout_with_bounded_slots(local, config.max_concurrent_updates)
+            staging = await download_to_staging(filesystem, checkpoint)  # Download
+            await check_model_valid(staging, checkpoint)  # Check valid
+            local = await publish_checkpoint(staging, checkpoint)
+            # Reload Process: each group calls reload_instance for up to n nodes.
+            await rollout_in_groups(local, config.max_concurrent_updates)
         await wait_for_next_poll()
 ```
 
