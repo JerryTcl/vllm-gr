@@ -17,14 +17,34 @@ The sidecar performs the following steps. Both checkpoint discovery and validati
 use the configured `FileSystem` implementation; the rollout is storage-independent.
 
 ```mermaid
+%%{init: {"flowchart": {"curve": "linear", "nodeSpacing": 45, "rankSpacing": 55}}}%%
 flowchart TD
-    UPDATE["1. Check model update"] -->|New published version| VALID["2. Check model valid<br/>Download, validate and publish locally"]
-    UPDATE -->|No update| POLL["Wait for next poll"]
-    POLL --> UPDATE
-    VALID -->|Invalid or download failed| RETRY["Keep all instances serving; retry"]
-    RETRY --> POLL
-    VALID -->|Valid local checkpoint| ROLL["3. Rolling update<br/>N service instances; at most n updating<br/>n configurable, default 1"]
+    %% Declare the central success path first to keep it visually prominent.
+    UPDATE["1. Check model update"]
+    VALID["2. Check model valid<br/>Download, validate and publish locally"]
+    ROLL["3. Rolling update<br/>N service instances; at most n updating<br/>n configurable, default 1"]
 
+    subgraph ACTIVE["Current update group: up to n instances"]
+        I1["Instance i: pause / reload / resume / warmup"]
+        MORE["... independent instance lifecycles ..."]
+        IN["Instance j: pause / reload / resume / warmup"]
+    end
+    JOIN["Wait for this group to finish"]
+    DONE["Rollout complete"]
+
+    UPDATE -->|New published version| VALID
+    VALID -->|Valid local checkpoint| ROLL
+    ROLL --> MORE
+    MORE --> JOIN
+    JOIN -->|All N instances updated| DONE
+
+    %% Parallel members keep the same lifecycle and join semantics.
+    ROLL --> I1
+    I1 --> JOIN
+    ROLL --> IN
+    IN --> JOIN
+
+    %% Storage and exceptional paths are declared after the main column.
     subgraph STORAGE["Pluggable FileSystem implementations"]
         FS["FileSystem interface"]
         HDFS["HDFSDownloader / HDFS"] -.-> FS
@@ -34,20 +54,12 @@ flowchart TD
     FS -.->|Discover version and read manifest| UPDATE
     FS -.->|Download files and read metadata| VALID
 
-    subgraph ACTIVE["Current update group: up to n instances"]
-        I1["Instance i: pause / reload / resume / warmup"]
-        MORE["... independent instance lifecycles ..."]
-        IN["Instance j: pause / reload / resume / warmup"]
-    end
-    ROLL --> I1
-    ROLL --> MORE
-    ROLL --> IN
+    UPDATE -->|No update| POLL["Wait for next poll"]
+    POLL --> UPDATE
+    VALID -->|Invalid or download failed| RETRY["Keep all instances serving; retry"]
+    RETRY --> POLL
     ROLL -.-> SERVING["All instances outside the group keep serving"]
-    I1 --> JOIN["Wait for this group to finish"]
-    MORE --> JOIN
-    IN --> JOIN
     JOIN -->|Group succeeded; instances remain| ROLL
-    JOIN -->|All N instances updated| DONE["Rollout complete"]
     JOIN -->|Any instance failed| STOP["Stop rollout; recover failed instance"]
 ```
 
@@ -60,7 +72,7 @@ retain their update slots until recovery succeeds.
 Each selected instance executes step 4 independently and strictly in this order:
 
 ```mermaid
-flowchart LR
+flowchart TD
     P["4. Pause<br/>Close business admission and drain"] --> L["Reload<br/>Load weights and refresh derived state"]
     L --> R["Resume<br/>Resume scheduling; admission stays closed"]
     R --> W["Warmup<br/>Execute real GR requests and validate"]
