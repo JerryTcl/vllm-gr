@@ -13,18 +13,58 @@ on every worker. GPU count alone must not be used to infer service endpoints.
 
 ## Data and control flow
 
+The sidecar performs the following steps. Both checkpoint discovery and validation
+use the configured `FileSystem` implementation; the rollout is storage-independent.
+
 ```mermaid
 flowchart TD
-    A[Poll checkpoint publication path] --> B[Resolve a complete checkpoint version]
-    B --> C[Download to shared temporary directory]
-    C --> D[Validate files and atomically publish local directory]
-    D --> E[Acquire one of n update slots]
-    E --> F[Pause instance and drain requests]
-    F --> G[Reload weights on every worker]
-    G --> H[Resume scheduling; keep business admission closed]
-    H --> I[Run configured warmup requests]
-    I --> J[Publish active version and reopen business admission]
-    J --> K[Release slot and update next instance]
+    UPDATE["1. Check model update"] -->|New published version| VALID["2. Check model valid<br/>Download, validate and publish locally"]
+    UPDATE -->|No update| POLL["Wait for next poll"]
+    POLL --> UPDATE
+    VALID -->|Invalid or download failed| RETRY["Keep all instances serving; retry"]
+    RETRY --> POLL
+    VALID -->|Valid local checkpoint| ROLL["3. Rolling update<br/>N service instances; at most n updating<br/>n configurable, default 1"]
+
+    subgraph STORAGE["Pluggable FileSystem implementations"]
+        FS["FileSystem interface"]
+        HDFS["HDFSDownloader / HDFS"] -.-> FS
+        P2P["P2P implementation - future"] -.-> FS
+        OTHER["Other implementations - future"] -.-> FS
+    end
+    FS -.->|Discover version and read manifest| UPDATE
+    FS -.->|Download files and read metadata| VALID
+
+    subgraph ACTIVE["Current update group: up to n instances"]
+        I1["Instance i: pause / reload / resume / warmup"]
+        MORE["... independent instance lifecycles ..."]
+        IN["Instance j: pause / reload / resume / warmup"]
+    end
+    ROLL --> I1
+    ROLL --> MORE
+    ROLL --> IN
+    ROLL -.-> SERVING["All instances outside the group keep serving"]
+    I1 --> JOIN["Wait for this group to finish"]
+    MORE --> JOIN
+    IN --> JOIN
+    JOIN -->|Group succeeded; instances remain| ROLL
+    JOIN -->|All N instances updated| DONE["Rollout complete"]
+    JOIN -->|Any instance failed| STOP["Stop rollout; recover failed instance"]
+```
+
+`N` is the total configured instance count (commonly 8). `n` is the maximum
+update group size, not the total instance count. When `n=1`, each group contains
+only one instance; the branches above illustrate the configurable parallel case.
+This design waits for each group before starting the next one. Failed instances
+retain their update slots until recovery succeeds.
+
+Each selected instance executes step 4 independently and strictly in this order:
+
+```mermaid
+flowchart LR
+    P["4. Pause<br/>Close business admission and drain"] --> L["Reload<br/>Load weights and refresh derived state"]
+    L --> R["Resume<br/>Resume scheduling; admission stays closed"]
+    R --> W["Warmup<br/>Execute real GR requests and validate"]
+    W -->|Success| READY["Publish serving version<br/>Reopen business admission"]
 ```
 
 An update slot covers the entire pause/reload/resume/warmup sequence. The default
@@ -37,17 +77,20 @@ cross-instance atomic switching is outside this scope.
 
 ### Discovery and download
 
-Keep storage-specific behavior behind a small `CheckpointDownloader` interface:
+Keep storage-specific behavior behind a small `FileSystem` interface. Discovery
+checks for updates; validation downloads through this interface and verifies the
+manifest, file sizes and checksums before making a checkpoint eligible for rollout:
 
 ```python
-class CheckpointDownloader(Protocol):
+class FileSystem(Protocol):
     async def discover(self, watch_uri: str) -> CheckpointRef | None: ...
     async def download(self, checkpoint: CheckpointRef, staging_dir: Path) -> None: ...
 ```
 
 `CheckpointRef` contains a stable version, immutable source URI, manifest digest,
 and expected files with sizes and checksums. The first implementation is
-`HDFSDownloader`, using the deployed HDFS client. Other storage implementations
+`HDFSDownloader`, implementing `FileSystem` with the deployed HDFS client. P2P and
+other storage implementations can be added later. All implementations
 reuse the same rollout logic without changing service APIs.
 
 The publisher uploads checkpoint files first and publishes the manifest last.
@@ -59,7 +102,7 @@ instances. It checks completeness and checksums, then atomically renames the
 temporary directory to a versioned directory on the same filesystem. Published
 directories are immutable. Failed downloads never trigger pause. Keep the current
 and previous checkpoint until all instances finish and retention permits cleanup.
-Storage credentials belong to the downloader deployment, not service requests.
+Storage credentials belong to the FileSystem deployment, not service requests.
 
 ### Rollout management
 
@@ -170,7 +213,7 @@ uses the same update slot. Make recovery outcome visible in status and logs.
 ```yaml
 watch_uri: hdfs://cluster/models/gr/published
 poll_interval_seconds: 30
-downloader: hdfs
+filesystem: hdfs
 checkpoint_root: /checkpoints
 max_concurrent_updates: 1
 instances:
@@ -195,7 +238,7 @@ async def update_instance(instance, checkpoint, operation_id):
 async def reconcile():
     await recover_rollout_state()
     while True:
-        checkpoint = await downloader.discover(config.watch_uri)
+        checkpoint = await filesystem.discover(config.watch_uri)
         if checkpoint is not None and needs_rollout(checkpoint):
             local = await download_validate_and_publish(checkpoint)
             await rollout_with_bounded_slots(local, config.max_concurrent_updates)
@@ -213,8 +256,8 @@ vllm_gr/
     controller.py           # Discovery loop, bounded rollout, reconciliation
     state.py                # Persistent rollout and per-instance progress
     client.py               # Typed server control client
-    downloaders/
-      base.py               # CheckpointRef and CheckpointDownloader contract
+    filesystems/
+      base.py               # CheckpointRef and FileSystem contract
       hdfs.py               # HDFS discovery and download implementation
   entrypoints/
     weight_update.py        # HTTP control handlers and maintenance admission
@@ -228,7 +271,7 @@ with existing GR execution-resource owners; do not add a second model loader.
 
 Required tests:
 
-- Downloader: incomplete publication, corrupt/missing files, interrupted download,
+- FileSystem: incomplete publication, corrupt/missing files, interrupted download,
   atomic publication, and safe retry; run an HDFS integration smoke separately.
 - Controller: configurable instance count, maximum unavailable count of `n`, strict
   per-instance ordering, duplicate versions, failure stop, and restart reconciliation.
