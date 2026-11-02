@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1640" height="1280" viewBox="0 0 1640 1280" role="img" aria-labelledby="title desc">
+<title id="title">Weight update sidecar flow</title>
+<desc id="desc">Steps 1, 2 and 3 share the same vertical centerline. Storage implementations are on the right. All original branches and instance lifecycles are retained.</desc>
+<rect width="100%" height="100%" fill="white"/>
+<rect x="1110" y="30" width="500" height="350" rx="12" fill="#f8fafc" stroke="#b8c6d4" stroke-width="1.5"/>
+<text x="1360" y="57.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#243447">Pluggable FileSystem implementations</text>
+<rect x="270" y="675" width="1100" height="185" rx="12" fill="#f8fafc" stroke="#b8c6d4" stroke-width="1.5"/>
+<text x="820" y="704.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#243447">Current update group: up to n instances</text>
+<polyline points="820,150 820,260" fill="none" stroke="#3572b0" stroke-width="3"/>
+<polygon points="820,260 815.6503446588877,250.99552897647322 824.3496553411123,250.99552897647322" fill="#3572b0"/>
+<rect x="734.5" y="195.0" width="171" height="20" fill="white"/>
+<text x="820" y="205.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">New published version</text>
+<polyline points="820,360 820,480" fill="none" stroke="#3572b0" stroke-width="3"/>
+<polygon points="820,480 815.6503446588877,470.9955289764732 824.3496553411123,470.9955289764732" fill="#3572b0"/>
+<rect x="735.5" y="410.0" width="169" height="20" fill="white"/>
+<text x="820" y="420.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">Valid local checkpoint</text>
+<polyline points="820,590 820,735" fill="none" stroke="#3572b0" stroke-width="3"/>
+<polygon points="820,735 815.6503446588877,725.9955289764732 824.3496553411123,725.9955289764732" fill="#3572b0"/>
+<polyline points="820,815 820,930" fill="none" stroke="#3572b0" stroke-width="3"/>
+<polygon points="820,930 815.6503446588877,920.9955289764732 824.3496553411123,920.9955289764732" fill="#3572b0"/>
+<polyline points="820,1000 820,1160" fill="none" stroke="#3572b0" stroke-width="3"/>
+<polygon points="820,1160 815.6503446588877,1150.9955289764732 824.3496553411123,1150.9955289764732" fill="#3572b0"/>
+<rect x="731.0" y="1070.0" width="178" height="20" fill="white"/>
+<text x="820" y="1080.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">All N instances updated</text>
+<polyline points="820,640 460,640 460,735" fill="none" stroke="#7a8999" stroke-width="1.7"/>
+<polygon points="460,735 455.6503446588877,725.9955289764732 464.3496553411123,725.9955289764732" fill="#7a8999"/>
+<polyline points="820,640 1180,640 1180,735" fill="none" stroke="#7a8999" stroke-width="1.7"/>
+<polygon points="1180,735 1175.6503446588877,725.9955289764732 1184.3496553411123,725.9955289764732" fill="#7a8999"/>
+<polyline points="460,815 460,895 820,895 820,930" fill="none" stroke="#7a8999" stroke-width="1.7"/>
+<polygon points="820,930 815.6503446588877,920.9955289764732 824.3496553411123,920.9955289764732" fill="#7a8999"/>
+<polyline points="1180,815 1180,895 820,895 820,930" fill="none" stroke="#7a8999" stroke-width="1.7"/>
+<polygon points="820,930 815.6503446588877,920.9955289764732 824.3496553411123,920.9955289764732" fill="#7a8999"/>
+<polyline points="1375,125 1330,125 1330,205 1310,205" fill="none" stroke="#7a8999" stroke-width="1.7" stroke-dasharray="6 5"/>
+<polygon points="1310,205 1319.0044710235268,200.6503446588877 1319.0044710235268,209.3496553411123" fill="#7a8999"/>
+<polyline points="1375,205 1310,205" fill="none" stroke="#7a8999" stroke-width="1.7" stroke-dasharray="6 5"/>
+<polygon points="1310,205 1319.0044710235268,200.6503446588877 1319.0044710235268,209.3496553411123" fill="#7a8999"/>
+<polyline points="1375,285 1330,285 1330,205 1310,205" fill="none" stroke="#7a8999" stroke-width="1.7" stroke-dasharray="6 5"/>
+<polygon points="1310,205 1319.0044710235268,200.6503446588877 1319.0044710235268,209.3496553411123" fill="#7a8999"/>
+<polyline points="1120,190 1060,190 1060,100 990,100" fill="none" stroke="#7a8999" stroke-width="1.7" stroke-dasharray="6 5"/>
+<polygon points="990,100 999.0044710235268,95.65034465888769 999.0044710235268,104.3496553411123" fill="#7a8999"/>
+<rect x="978.5" y="123.0" width="143" height="40" fill="white"/>
+<text x="1050" y="131.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">Discover version</text>
+<text x="1050" y="154.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">and read manifest</text>
+<polyline points="1120,220 1070,220 1070,310 1020,310" fill="none" stroke="#7a8999" stroke-width="1.7" stroke-dasharray="6 5"/>
+<polygon points="1020,310 1029.0044710235268,305.6503446588877 1029.0044710235268,314.3496553411123" fill="#7a8999"/>
+<rect x="1045.5" y="320.0" width="149" height="40" fill="white"/>
+<text x="1120" y="328.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">Download files</text>
+<text x="1120" y="351.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">and read metadata</text>
+<polyline points="650,100 410,100" fill="none" stroke="#7a8999" stroke-width="1.7"/>
+<polygon points="410,100 419.0044710235268,95.65034465888769 419.0044710235268,104.3496553411123" fill="#7a8999"/>
+<rect x="487.5" y="72.0" width="85" height="20" fill="white"/>
+<text x="530" y="82.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">No update</text>
+<polyline points="210,65 210,15 820,15 820,50" fill="none" stroke="#7a8999" stroke-width="1.7"/>
+<polygon points="820,50 815.6503446588877,40.99552897647323 824.3496553411123,40.99552897647323" fill="#7a8999"/>
+<polyline points="620,310 410,310" fill="none" stroke="#7a8999" stroke-width="1.7"/>
+<polygon points="410,310 419.0044710235268,305.6503446588877 419.0044710235268,314.3496553411123" fill="#7a8999"/>
+<rect x="452.5" y="255.0" width="125" height="40" fill="white"/>
+<text x="515" y="263.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">Invalid or</text>
+<text x="515" y="286.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">download failed</text>
+<polyline points="210,265 210,135" fill="none" stroke="#7a8999" stroke-width="1.7"/>
+<polygon points="210,135 214.3496553411123,144.00447102352678 205.6503446588877,144.00447102352678" fill="#7a8999"/>
+<polyline points="1020,535 1160,535" fill="none" stroke="#7a8999" stroke-width="1.7" stroke-dasharray="6 5"/>
+<polygon points="1160,535 1150.9955289764732,539.3496553411123 1150.9955289764732,530.6503446588877" fill="#7a8999"/>
+<polyline points="620,965 120,965 120,535 620,535" fill="none" stroke="#7a8999" stroke-width="1.7"/>
+<polygon points="620,535 610.9955289764732,539.3496553411123 610.9955289764732,530.6503446588877" fill="#7a8999"/>
+<rect x="159.0" y="540.0" width="142" height="40" fill="white"/>
+<text x="230" y="548.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">Group succeeded;</text>
+<text x="230" y="571.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">instances remain</text>
+<polyline points="1020,965 1300,965 1300,1045" fill="none" stroke="#7a8999" stroke-width="1.7"/>
+<polygon points="1300,1045 1295.6503446588877,1035.9955289764732 1304.3496553411123,1035.9955289764732" fill="#7a8999"/>
+<rect x="1116.5" y="931.0" width="147" height="20" fill="white"/>
+<text x="1190" y="941.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#243447">Any instance failed</text>
+<rect x="650.0" y="50.0" width="340" height="100" rx="12" fill="#edf5ff" stroke="#3572b0" stroke-width="1.5"/>
+<text x="820" y="100.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#243447">1. Check model update</text>
+<rect x="620.0" y="260.0" width="400" height="100" rx="12" fill="#edf5ff" stroke="#3572b0" stroke-width="1.5"/>
+<text x="820" y="298.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#243447">2. Check model valid</text>
+<text x="820" y="321.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#243447">Download, validate and publish locally</text>
+<rect x="620.0" y="480.0" width="400" height="110" rx="12" fill="#edf5ff" stroke="#3572b0" stroke-width="1.5"/>
+<text x="820" y="512.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#243447">3. Rolling update</text>
+<text x="820" y="535.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#243447">N service instances; at most n updating</text>
+<text x="820" y="558.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#243447">n configurable, default 1</text>
+<rect x="665.0" y="735.0" width="310" height="80" rx="12" fill="#edf5ff" stroke="#3572b0" stroke-width="1.5"/>
+<text x="820" y="763.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#243447">... independent instance lifecycles</text>
+<text x="820" y="786.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#243447">...</text>
+<rect x="300.0" y="735.0" width="320" height="80" rx="12" fill="#ffffff" stroke="#9eafbf" stroke-width="1.5"/>
+<text x="460" y="763.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">Instance i:</text>
+<text x="460" y="786.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">pause / reload / resume / warmup</text>
+<rect x="1020.0" y="735.0" width="320" height="80" rx="12" fill="#ffffff" stroke="#9eafbf" stroke-width="1.5"/>
+<text x="1180" y="763.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">Instance j:</text>
+<text x="1180" y="786.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">pause / reload / resume / warmup</text>
+<rect x="620.0" y="930.0" width="400" height="70" rx="12" fill="#edf5ff" stroke="#3572b0" stroke-width="1.5"/>
+<text x="820" y="965.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#243447">Wait for this group to finish</text>
+<rect x="650.0" y="1160.0" width="340" height="80" rx="12" fill="#edf5ff" stroke="#3572b0" stroke-width="1.5"/>
+<text x="820" y="1200.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="17" fill="#243447">Rollout complete</text>
+<rect x="1120.0" y="170.0" width="190" height="70" rx="12" fill="#ffffff" stroke="#9eafbf" stroke-width="1.5"/>
+<text x="1215" y="205.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">FileSystem interface</text>
+<rect x="1375.0" y="97.5" width="210" height="55" rx="12" fill="#ffffff" stroke="#9eafbf" stroke-width="1.5"/>
+<text x="1480" y="125.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">HDFSDownloader / HDFS</text>
+<rect x="1375.0" y="177.5" width="210" height="55" rx="12" fill="#ffffff" stroke="#9eafbf" stroke-width="1.5"/>
+<text x="1480" y="193.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">P2P implementation -</text>
+<text x="1480" y="216.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">future</text>
+<rect x="1375.0" y="257.5" width="210" height="55" rx="12" fill="#ffffff" stroke="#9eafbf" stroke-width="1.5"/>
+<text x="1480" y="273.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">Other implementations -</text>
+<text x="1480" y="296.5" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">future</text>
+<rect x="110.0" y="65.0" width="300" height="70" rx="12" fill="#ffffff" stroke="#9eafbf" stroke-width="1.5"/>
+<text x="260" y="100.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">Wait for next poll</text>
+<rect x="110.0" y="265.0" width="300" height="90" rx="12" fill="#ffffff" stroke="#9eafbf" stroke-width="1.5"/>
+<text x="260" y="310.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">Keep all instances serving; retry</text>
+<rect x="1160.0" y="497.5" width="410" height="75" rx="12" fill="#ffffff" stroke="#9eafbf" stroke-width="1.5"/>
+<text x="1365" y="535.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">All instances outside the group keep serving</text>
+<rect x="1105.0" y="1045.0" width="390" height="90" rx="12" fill="#ffffff" stroke="#9eafbf" stroke-width="1.5"/>
+<text x="1300" y="1090.0" text-anchor="middle" dominant-baseline="middle" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#243447">Stop rollout; recover failed instance</text>
+</svg>
