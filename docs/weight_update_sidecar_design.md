@@ -18,58 +18,6 @@ use the configured `FileSystem` implementation; the rollout is storage-independe
 
 ![Weight update sidecar flow](assets/weight_update_sidecar_flow.svg)
 
-<details>
-<summary>Mermaid source (automatic layout)</summary>
-
-```mermaid
-%%{init: {"flowchart": {"curve": "linear", "nodeSpacing": 45, "rankSpacing": 55}}}%%
-flowchart TD
-    %% Declare the central success path first to keep it visually prominent.
-    UPDATE["1. Check model update"]
-    VALID["2. Check model valid<br/>Download, validate and publish locally"]
-    ROLL["3. Rolling update<br/>N service instances; at most n updating<br/>n configurable, default 1"]
-
-    subgraph ACTIVE["Current update group: up to n instances"]
-        I1["Instance i: pause / reload / resume / warmup"]
-        MORE["... independent instance lifecycles ..."]
-        IN["Instance j: pause / reload / resume / warmup"]
-    end
-    JOIN["Wait for this group to finish"]
-    DONE["Rollout complete"]
-
-    UPDATE -->|New published version| VALID
-    VALID -->|Valid local checkpoint| ROLL
-    ROLL --> MORE
-    MORE --> JOIN
-    JOIN -->|All N instances updated| DONE
-
-    %% Parallel members keep the same lifecycle and join semantics.
-    ROLL --> I1
-    I1 --> JOIN
-    ROLL --> IN
-    IN --> JOIN
-
-    %% Storage and exceptional paths are declared after the main column.
-    subgraph STORAGE["Pluggable FileSystem implementations"]
-        FS["FileSystem interface"]
-        HDFS["HDFSDownloader / HDFS"] -.-> FS
-        P2P["P2P implementation - future"] -.-> FS
-        OTHER["Other implementations - future"] -.-> FS
-    end
-    FS -.->|Discover version and read manifest| UPDATE
-    FS -.->|Download files and read metadata| VALID
-
-    UPDATE -->|No update| POLL["Wait for next poll"]
-    POLL --> UPDATE
-    VALID -->|Invalid or download failed| RETRY["Keep all instances serving; retry"]
-    RETRY --> POLL
-    ROLL -.-> SERVING["All instances outside the group keep serving"]
-    JOIN -->|Group succeeded; instances remain| ROLL
-    JOIN -->|Any instance failed| STOP["Stop rollout; recover failed instance"]
-```
-
-</details>
-
 `N` is the total configured instance count (commonly 8). `n` is the maximum
 update group size, not the total instance count. When `n=1`, each group contains
 only one instance; the branches above illustrate the configurable parallel case.
