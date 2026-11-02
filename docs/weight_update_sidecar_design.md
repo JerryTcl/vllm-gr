@@ -16,7 +16,7 @@ on every worker. GPU count alone must not be used to infer service endpoints.
 The sidecar performs the following steps. Both checkpoint discovery and validation
 use the configured `FileSystem` implementation; the rollout is storage-independent.
 
-![Weight update sidecar flow](assets/weight_update_sidecar_flow.svg)
+<img src="assets/weight_update_sidecar_flow.svg" alt="Weight update sidecar flow" width="650">
 
 `N` is the total configured instance count (commonly 8). `n` is the maximum
 update group size, not the total instance count. When `n=1`, each group contains
