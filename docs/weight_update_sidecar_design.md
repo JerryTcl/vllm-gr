@@ -3,8 +3,10 @@
 ## Scope
 
 Add a sidecar process that discovers and downloads checkpoints, then rolls out
-weight updates across the GR service instances in one Pod. Only weights change:
-model architecture, tokenizer, configuration, and Trie resources remain unchanged.
+weight updates across the GR service instances in one Pod. Weight updates keep
+model architecture, tokenizer, configuration, and Trie resources unchanged. Trie
+content updates use the same lifecycle, as described below; their format and
+configuration remain unchanged.
 This document proposes the implementation; it does not introduce runtime code.
 
 The Pod commonly has eight independent, single-GPU services, but the instance list
@@ -59,18 +61,37 @@ share the same checkpoint validity rules:
 
 ```python
 class FileSystem(Protocol):
-    async def get_latest_version(self, address: str) -> CheckpointRef | None: ...
-    async def download(self, address: str, staging_dir: Path) -> None: ...
+    async def get_latest_version(self, address: str) -> str | None: ...
+    async def download(
+        self, address: str, version: str, target_dir: Path
+    ) -> None: ...
 ```
 
-`CheckpointRef` contains a stable version, immutable source URI, manifest digest,
-and expected files with sizes and checksums. The first implementation is
-`HDFSDownloader`, implementing `FileSystem` with the deployed HDFS client. P2P and
-other storage implementations can be added later. All implementations
-reuse the same rollout logic without changing service APIs.
+`address` is the configured checkpoint publication location in both calls.
+`get_latest_version` returns the latest published version, or `None` if none is
+available. Storage access failures raise an error rather than returning `None`.
+The sidecar compares the returned version with its last successfully rolled-out
+version and starts a download only when they differ. Per-instance progress still
+determines which instances need an update after an interrupted rollout.
+
+`download` receives the same monitored address, the selected version, and a local
+target directory. The FileSystem implementation resolves the exact version within
+that address; the sidecar does not need to understand storage-specific paths.
+Downloads must remain pinned to that version even if a newer version is published.
+If the selected version is unavailable, fail rather than silently downloading the
+latest one. Published version contents must be immutable.
+
+The downloaded checkpoint includes a manifest identifying its version, expected
+files, sizes, and checksums. Check valid verifies that this version matches the
+requested version and validates the files before rollout. The controller reads
+validation metadata from the local manifest after download.
+
+The first implementation is `HDFSDownloader`, implementing `FileSystem` with the
+deployed HDFS client. P2P and other storage implementations can be added later.
+All implementations reuse the same rollout logic without changing service APIs.
 
 The publisher uploads checkpoint files first and publishes the manifest last.
-Discovery only returns published versions; directory modification time is not a
+`get_latest_version` only returns published versions; directory modification time is not a
 completion signal. This publication convention is a deployment prerequisite.
 
 The sidecar downloads once into a shared volume visible at the same path to all
@@ -169,6 +190,29 @@ After reload, report `loaded_version=new` but retain the previous verified
 `serving_version`. After successful warmup, atomically publish the new serving
 version and reopen admission. A warmup failure keeps the instance unavailable.
 
+## Trie content updates
+
+Reuse the same FileSystem version lookup, pinned download, validation, and HTTP
+control flow: **Check update -> Download -> Check valid -> Pause/Drain ->
+Reload Trie -> Resume/Warmup**. Use a separate source address and version state
+for Trie artifacts.
+
+The only orchestration difference is that Trie updates do not roll: update all
+configured instances concurrently, without the model update group limit `n`.
+Each instance still follows the full lifecycle and stays unavailable until its
+warmup succeeds. This does not imply an atomic switch across instances.
+
+Add `POST /reload_trie` with `operation_id`, `version`, `trie_path`, and
+`manifest_digest`. The resource manager builds a new immutable `ConstraintTable`
+and device Backend, then replaces the old Backend while requests are drained.
+Refresh affected Graphs and runtime references before reporting reload success;
+keep old resources until safe to release. Preparation failure retains the old
+Backend; a later failure keeps admission closed until recovery succeeds.
+
+Reuse weight-update idempotency, status, recovery, and the per-instance maintenance
+lock. Validate the new Trie against the unchanged tokenizer, vocabulary, format,
+and configured Trie IDs. Model and Trie updates must not overlap on an instance.
+
 ## Failure and recovery
 
 | Failure | Required behavior |
@@ -203,7 +247,6 @@ instances:
 # Also configure download/drain/reload/warmup timeouts and warmup inputs.
 ```
 
-
 ## Implementation and acceptance
 
 Proposed code organization:
@@ -216,7 +259,7 @@ vllm_gr/
     state.py                # Persistent rollout and per-instance progress
     client.py               # Typed server control client
     filesystems/
-      base.py               # CheckpointRef and FileSystem contract
+      base.py               # FileSystem contract for version lookup and download
       hdfs.py               # HDFS discovery and download implementation
   entrypoints/
     weight_update.py        # HTTP control handlers and maintenance admission
@@ -231,7 +274,9 @@ with existing GR execution-resource owners; do not add a second model loader.
 Required tests:
 
 - FileSystem: incomplete publication, corrupt/missing files, interrupted download,
-  atomic publication, and safe retry; run an HDFS integration smoke separately.
+  atomic publication, and safe retry. Verify that publishing B after discovering A
+  still downloads A, or fails if A is unavailable; run an HDFS integration smoke
+  separately.
 - Controller: configurable instance count, maximum unavailable count of `n`, strict
   per-instance ordering, duplicate versions, failure stop, and restart reconciliation.
 - Control API: drain semantics, business admission, idempotency, invalid paths,
@@ -239,6 +284,8 @@ Required tests:
 - GPU end to end: load distinguishable same-structure checkpoints A/B; verify B
   output against a fresh B instance, including sliced logits and supported Graph
   paths. Inject reload/warmup failures and verify no traffic reaches partial state.
+- Trie updates: verify all-instance dispatch without rolling groups, new candidates
+  after reload, Graph references, and failed-update recovery.
 - Performance: compare steady-state inference before and after lifecycle changes
   with identical weights/settings; separately report drain, reload, warmup, and
   total per-instance unavailability. Include V1/V2 and NPU where supported.
