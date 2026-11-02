@@ -186,7 +186,7 @@ cannot be verified, keep the instance unavailable and restart it with the previo
 checkpoint. This is a recovery reload, not an assumed atomic rollback. Recovery
 uses the same update slot. Make recovery outcome visible in status and logs.
 
-## Configuration and pseudocode
+## Configuration
 
 ```yaml
 watch_uri: hdfs://cluster/models/gr/published
@@ -203,28 +203,6 @@ instances:
 # Also configure download/drain/reload/warmup timeouts and warmup inputs.
 ```
 
-```python
-async def reload_instance(instance, checkpoint, operation_id):
-    # Slot remains reserved until success or verified recovery.
-    await instance.pause(operation_id, mode="wait")
-    await instance.reload_weights(operation_id, checkpoint.local_path,
-                                  checkpoint.version, checkpoint.manifest_digest)
-    await instance.resume(operation_id)  # Business admission remains closed.
-    await instance.warmup(operation_id)  # Opens admission only on success.
-
-
-async def reconcile():
-    await recover_rollout_state()
-    while True:
-        checkpoint = await filesystem.discover(config.watch_uri)  # Check update
-        if checkpoint is not None and needs_rollout(checkpoint):
-            staging = await download_to_staging(filesystem, checkpoint)  # Download
-            await check_model_valid(staging, checkpoint)  # Check valid
-            local = await publish_checkpoint(staging, checkpoint)
-            # Reload Process: each group calls reload_instance for up to n nodes.
-            await rollout_in_groups(local, config.max_concurrent_updates)
-        await wait_for_next_poll()
-```
 
 ## Implementation and acceptance
 
