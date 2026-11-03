@@ -194,7 +194,6 @@ config = SidecarConfig(
         UpdateTask(
             name="ckpt",
             resource_type="checkpoint",
-            target_instances="all",
             filesystem=HDFSDownloader(),
             address="hdfs://cluster/models/gr/checkpoints",
             target_dir=Path("/updates/checkpoints"),
@@ -205,7 +204,6 @@ config = SidecarConfig(
         UpdateTask(
             name="trie",
             resource_type="trie",
-            target_instances="all",
             filesystem=HDFSDownloader(),
             address="hdfs://cluster/models/gr/tries",
             target_dir=Path("/updates/tries"),
