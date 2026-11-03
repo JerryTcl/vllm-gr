@@ -1,296 +1,152 @@
-# Weight update sidecar design
+# Model and Trie update sidecar design
 
-## Scope
+## Purpose and scope
 
-Add a sidecar process that discovers and downloads checkpoints, then rolls out
-weight updates across the GR service instances in one Pod. Weight updates keep
-model architecture, tokenizer, configuration, and Trie resources unchanged. Trie
-content updates use the same lifecycle, as described below; their format and
+A sidecar manages resource updates for the GR service instances in one Pod.
+Checkpoint updates change model weights only; Trie updates change constraint
+contents only. Model architecture, tokenizer, resource formats, and serving
 configuration remain unchanged.
-This document proposes the implementation; it does not introduce runtime code.
 
-The Pod commonly has eight independent, single-GPU services, but the instance list
-is configurable. An instance can also own multiple workers; its reload must succeed
-on every worker. GPU count alone must not be used to infer service endpoints.
+This document describes the architecture and responsibilities. Concrete APIs,
+configuration schemas, and implementation details are deferred.
 
-## Data and control flow
+## Architecture
 
-The sidecar owns the outer update loop. It prepares a checkpoint before sending
-HTTP control requests to the GR service instances. Storage access is provided by
-pluggable `FileSystem` implementations: HDFS first, with P2P and others added later.
+<img src="assets/weight_update_sidecar_flow.svg" alt="Sidecar tasks, update modes and update processes" width="650">
 
-<img src="assets/weight_update_sidecar_flow.svg" alt="Weight update sidecar flow" width="650">
+One Sidecar Process owns multiple Tasks. Each Task independently discovers,
+downloads, and validates a resource version, then applies it to its target service
+instances. The diagram shows a checkpoint Task and a Trie Task.
 
-The flow follows the stages shown above:
+`Node` means one GR service instance, not a physical host. A Pod commonly has
+eight single-GPU instances, but the target instance count is configurable. An
+instance can own multiple workers; its resource update must cover every worker.
 
-1. **Check update:** discover a newly published checkpoint through `FileSystem`.
-   If no update is available, wait for the next poll.
-2. **Download:** fetch the checkpoint once into a temporary directory on the Pod's
-   shared volume. No service instance is paused during the download.
-3. **Check valid:** verify the downloaded files against the manifest, including
-   completeness, sizes, checksums, and compatibility with the running model. Only
-   a valid checkpoint is published as an immutable local directory for rollout.
-4. **Reload Process:** roll out the local checkpoint to Node 1, Node 2, and the
-   remaining configured instances using HTTP control requests. For each instance,
-   execute **Pause/Drain -> Reload -> Resume/Warmup** in that order.
+## Core abstractions
 
-`Node` in the diagram means one GR service instance, not a physical host. `N` is
-its total configured count (commonly 8). Update at most `n` instances in each
-rolling group, controlled by `max_concurrent_updates` (default 1, range 1 to N).
-Finish the
-current group before starting the next; instances outside the group keep serving.
-
-Within each instance, Pause/Drain closes business admission and waits for accepted
-requests to finish. Reload loads the checkpoint on every worker and refreshes
-weight-dependent state internally. Resume/Warmup first resumes scheduling, then
-executes warmup requests while business admission stays closed. Only a successful
-warmup publishes the serving version and reopens admission. The diagram groups
-Resume/Warmup as one phase; the control API exposes resume and warmup separately.
-
-An update slot covers the entire instance lifecycle, including recovery. Failed
-instances retain their slots until recovery succeeds. Rolling updates temporarily
-serve different weight versions; cross-instance atomic switching is outside scope.
-
-## Sidecar responsibilities
-
-### Check update, download, and check valid
-
-Keep discovery and download behind a small `FileSystem` interface. The controller
-then runs a common local validation step, so HDFS, P2P, and future implementations
-share the same checkpoint validity rules:
-
-```python
-class FileSystem(Protocol):
-    async def get_latest_version(self, address: str) -> str | None: ...
-    async def download(
-        self, address: str, version: str, target_dir: Path
-    ) -> None: ...
-```
-
-`address` is the configured checkpoint publication location in both calls.
-`get_latest_version` returns the latest published version, or `None` if none is
-available. Storage access failures raise an error rather than returning `None`.
-The sidecar compares the returned version with its last successfully rolled-out
-version and starts a download only when they differ. Per-instance progress still
-determines which instances need an update after an interrupted rollout.
-
-`download` receives the same monitored address, the selected version, and a local
-target directory. The FileSystem implementation resolves the exact version within
-that address; the sidecar does not need to understand storage-specific paths.
-Downloads must remain pinned to that version even if a newer version is published.
-If the selected version is unavailable, fail rather than silently downloading the
-latest one. Published version contents must be immutable.
-
-The downloaded checkpoint includes a manifest identifying its version, expected
-files, sizes, and checksums. Check valid verifies that this version matches the
-requested version and validates the files before rollout. The controller reads
-validation metadata from the local manifest after download.
-
-The first implementation is `HDFSDownloader`, implementing `FileSystem` with the
-deployed HDFS client. P2P and other storage implementations can be added later.
-All implementations reuse the same rollout logic without changing service APIs.
-
-The publisher uploads checkpoint files first and publishes the manifest last.
-`get_latest_version` only returns published versions; directory modification time is not a
-completion signal. This publication convention is a deployment prerequisite.
-
-The sidecar downloads once into a shared volume visible at the same path to all
-instances. The Check valid stage checks completeness, checksums, and model
-compatibility before the controller atomically renames the
-temporary directory to a versioned directory on the same filesystem. Published
-directories are immutable. Failed downloads never trigger pause. Keep the current
-and previous checkpoint until all instances finish and retention permits cleanup.
-Storage credentials belong to the FileSystem deployment, not service requests.
-
-### Reload Process and rolling update
-
-After Check valid succeeds, enter Reload Process. Configure explicit instance IDs
-and HTTP control endpoints for Node 1 through Node N. Persist each instance's
-target version, last verified serving version, operation ID, phase, and error in
-the shared volume. Query server state after a sidecar restart instead of blindly
-repeating calls. Allow only one rollout coordinator per Pod.
-
-Serialize checkpoint rollouts. If another version appears during a rollout, finish
-the current rollout before selecting the newest published version. Do not compare
-version strings to infer ordering; use the publication manifest's ordering.
-
-On an update failure, stop starting new instance updates. Already running updates
-must finish or enter a known failed state. A failed instance continues occupying
-its update slot until recovered: `n` bounds unavailable instances as well as active
-update tasks. Do not automatically proceed and make more instances unavailable.
-
-## Server control contract
-
-Use HTTP control endpoints independently of the inference protocol. HTTP serving
-already inherits upstream pause/resume routes. A gRPC-only deployment needs a
-separate control listener exposing the same operations. These endpoints are for
-the sidecar on the Pod control network and must not expose generic worker RPCs.
-
-The endpoint names below are proposed; existing pause/resume behavior is extended
-only where needed for maintenance admission and operation tracking.
-
-| Operation | Contract | Existing capability and required work |
-| --- | --- | --- |
-| `POST /pause?mode=wait` | Close business admission, drain accepted work, return only when reload is safe | Upstream pause/drain exists with multiprocess Engine Core; add maintenance admission and timeout handling. In-process mode needs a drain implementation before being supported. |
-| `POST /reload_weights` | Load a local checkpoint on every worker and maintain all weight-dependent resources | Internal worker reload exists; add the public handler, validation, lifecycle integration, and operation state. |
-| `POST /resume` | Resume scheduling while maintenance admission remains closed | Reuse upstream resume; distinguish scheduler state from business readiness. |
-| `POST /warmup` | Execute configured real GR requests, validate completion, then reopen admission | Add the endpoint and controlled internal admission for warmup requests. |
-| `GET /weight_update/status` | Report phase, operation ID, target/loaded/serving versions, readiness, and last error | Add a query API for reconciliation and timeout recovery. |
-
-While maintenance admission is closed, new business requests receive an explicit
-unavailable response rather than queueing behind pause. Requests accepted before
-the gate closes must either drain or receive a terminal failure before reload.
-Warmup uses an internal admission path, not a caller-supplied public bypass flag.
-Liveness stays healthy during an update; readiness stays false until warmup passes.
-
-Example reload body:
-
-```json
-{
-  "operation_id": "rollout-42-instance-0",
-  "version": "checkpoint-42",
-  "weights_path": "/checkpoints/checkpoint-42",
-  "manifest_digest": "sha256:..."
-}
-```
-
-Only allow paths under the configured checkpoint root. Verify the local manifest,
-compatible parameter names/shapes/dtypes, and checkpoint completeness as far as
-possible before mutation. Native loader warnings alone are not a successful
-validation. Model structure and non-weight configuration must match startup.
-
-Reload requires a drained, paused instance and an exclusive update lock. Dispatch
-`reload_weights(weights_path=...)` through the engine to every worker; return
-success only after all workers acknowledge and device work completes. Repeated
-calls with the same operation ID and payload return the existing result; conflicting
-payloads or overlapping updates are rejected. Other maintenance operations also
-carry the operation ID so retries cannot resume the wrong update.
-
-### Reload owns derived weight state
-
-Cache maintenance is an internal part of reload, not an extra sidecar call.
-The current sliced LM-head path clones weight/bias slices and keys reuse by
-vocabulary range, so updating the original parameter alone can leave stale logits
-weights. Refresh these copies and audit other derived layouts. NPU stage logits
-already have reload hooks; integrate and test their success/failure behavior.
-
-CUDA Graph references must remain valid. Update derived buffers in place where
-addresses can be preserved. If loading or postprocessing changes required storage,
-invalidate and rebuild the affected execution resources before reporting success.
-Do not unconditionally repeat the startup compilation routine on a live worker.
-
-### Warmup and version publication
-
-Configure warmup inputs at deployment time, including representative prompt length,
-batch size, beam width, and decode steps. Use the actual GR engine execution path;
-check successful completion, expected result shape, and finite scores. Warmup does
-not prove model quality, but verifies the updated instance can execute its workload.
-
-After reload, report `loaded_version=new` but retain the previous verified
-`serving_version`. After successful warmup, atomically publish the new serving
-version and reopen admission. A warmup failure keeps the instance unavailable.
-
-## Trie content updates
-
-Reuse the same FileSystem version lookup, pinned download, validation, and HTTP
-control flow: **Check update -> Download -> Check valid -> Pause/Drain ->
-Reload Trie -> Resume/Warmup**. Use a separate source address and version state
-for Trie artifacts.
-
-The only orchestration difference is that Trie updates do not roll: update all
-configured instances concurrently, without the model update group limit `n`.
-Each instance still follows the full lifecycle and stays unavailable until its
-warmup succeeds. This does not imply an atomic switch across instances.
-
-Add `POST /reload_trie` with `operation_id`, `version`, `trie_path`, and
-`manifest_digest`. The resource manager builds a new immutable `ConstraintTable`
-and device Backend, then replaces the old Backend while requests are drained.
-Refresh affected Graphs and runtime references before reporting reload success;
-keep old resources until safe to release. Preparation failure retains the old
-Backend; a later failure keeps admission closed until recovery succeeds.
-
-Reuse weight-update idempotency, status, recovery, and the per-instance maintenance
-lock. Validate the new Trie against the unchanged tokenizer, vocabulary, format,
-and configured Trie IDs. Model and Trie updates must not overlap on an instance.
-
-## Failure and recovery
-
-| Failure | Required behavior |
+| Abstraction | Responsibility |
 | --- | --- |
-| Discovery/download/validation fails | Keep all instances serving; retry without pausing. |
-| Drain times out | Do not reload. Reconcile state and resume the unchanged instance if safe; halt rollout. |
-| Reload fails on any worker | Keep admission closed; partial parameter mutation is possible. Halt rollout. |
-| Warmup fails | Keep admission closed and halt rollout; do not publish the target serving version. |
-| Client call times out | Query operation status; timeout does not mean server execution stopped. |
-| Sidecar restarts | Recover persisted rollout state and reconcile each server before acquiring more slots. |
+| **Sidecar** | Run and monitor Tasks, and coordinate updates that target the same instances. |
+| **Task** | Own one resource's source, polling interval, local storage, validation rules, target instances, update configuration, version state, and progress. |
+| **FileSystem** | Discover published versions and download a selected version; hide storage-specific behavior. |
+| **Update Mode** | Decide how updates are scheduled across the target instances. |
+| **Update Process** | Define the steps performed on each selected instance. |
 
-For reload/warmup failure, explicitly reload the retained previous checkpoint on
-all workers, then resume and warmup before reopening admission. If restoration
-cannot be verified, keep the instance unavailable and restart it with the previous
-checkpoint. This is a recovery reload, not an assumed atomic rollback. Recovery
-uses the same update slot. Make recovery outcome visible in status and logs.
+Update Mode and Update Process are independent: the mode controls **which
+instances update together**, while the process controls **what happens on each
+instance**. Neither is hard-coded into the resource type. A Task must choose a
+combination supported by its resource and the server.
 
-## Configuration
+### Task
 
-```yaml
-watch_uri: hdfs://cluster/models/gr/published
-poll_interval_seconds: 30
-filesystem: hdfs
-checkpoint_root: /checkpoints
-max_concurrent_updates: 1
-instances:
-  - id: gpu-0
-    control_url: http://127.0.0.1:9100
-  - id: gpu-1
-    control_url: http://127.0.0.1:9101
-# Configure all service instances; eight is a deployment choice.
-# Also configure download/drain/reload/warmup timeouts and warmup inputs.
-```
+The checkpoint Task and Trie Task have separate sources, configurations, and
+version state. A resource update in one Task does not imply an update in the
+other. Each Task selects its FileSystem, Update Mode, and Update Process.
 
-## Implementation and acceptance
+Discovery and download can proceed independently across Tasks. Update execution
+on overlapping service instances must be coordinated so checkpoint and Trie
+reloads cannot race with each other.
 
-Proposed code organization:
+### FileSystem
 
-```text
-vllm_gr/
-  sidecar/
-    __main__.py             # Separate process entry point and configuration
-    controller.py           # Discovery loop, bounded rollout, reconciliation
-    state.py                # Persistent rollout and per-instance progress
-    client.py               # Typed server control client
-    filesystems/
-      base.py               # FileSystem contract for version lookup and download
-      hdfs.py               # HDFS discovery and download implementation
-  entrypoints/
-    weight_update.py        # HTTP control handlers and maintenance admission
-  v1/
-    engine/                 # Draining and collective reload integration
-    worker/                 # Reload resource lifecycle integration
-```
+Use pluggable implementations such as HDFS, P2P, and other storage systems. Start
+with HDFSDownloader; adding another implementation does not change Task scheduling
+or instance update behavior.
 
-Reuse upstream pause/resume and worker loading rather than copying them. Integrate
-with existing GR execution-resource owners; do not add a second model loader.
+Version discovery returns a published version. If it differs from the Task's
+completed version, download using the same monitored address plus the selected
+version and local target directory. The implementation resolves the version's
+storage location. A later publication must not change the version being downloaded.
 
-Required tests:
+Download once into Pod-shared storage, then validate completeness, checksums, and
+resource compatibility. Publish a usable local resource only after validation.
+Instances continue serving throughout discovery, download, and validation.
 
-- FileSystem: incomplete publication, corrupt/missing files, interrupted download,
-  atomic publication, and safe retry. Verify that publishing B after discovering A
-  still downloads A, or fails if A is unavailable; run an HDFS integration smoke
-  separately.
-- Controller: configurable instance count, maximum unavailable count of `n`, strict
-  per-instance ordering, duplicate versions, failure stop, and restart reconciliation.
-- Control API: drain semantics, business admission, idempotency, invalid paths,
-  competing updates, timeouts, and all-worker failure propagation.
-- GPU end to end: load distinguishable same-structure checkpoints A/B; verify B
-  output against a fresh B instance, including sliced logits and supported Graph
-  paths. Inject reload/warmup failures and verify no traffic reaches partial state.
-- Trie updates: verify all-instance dispatch without rolling groups, new candidates
-  after reload, Graph references, and failed-update recovery.
-- Performance: compare steady-state inference before and after lifecycle changes
-  with identical weights/settings; separately report drain, reload, warmup, and
-  total per-instance unavailability. Include V1/V2 and NPU where supported.
+### Update Mode
 
-Deployment details to confirm before implementation: checkpoint publication
-manifest format, HDFS client/authentication, instance control endpoints, routing
-behavior during readiness changes, and representative warmup inputs. The design
-defaults to fail-stop rollout and verified restoration of the previous checkpoint.
+- **Rolling Update:** update instances in groups of at most `n`, defaulting to 1.
+  Wait for the current group to finish before starting the next. Instances outside
+  the group continue serving.
+- **Sync Update:** dispatch updates to all target instances concurrently, without
+  rolling groups. This means concurrent execution, not an atomic version switch
+  at exactly the same instant.
+
+Both modes execute the Task's selected Update Process on each instance and track
+completion or failure separately for every target.
+
+### Update Process
+
+- **PausedUpdate Process:** pause admission and drain existing requests, reload
+  the resource, resume scheduling, and run warmup. Business admission remains
+  closed until warmup succeeds. The sequence is **Pause/Drain -> Reload ->
+  Resume/Warmup**.
+- **OnlineUpdate Process:** directly reload the resource while serving continues.
+  The server prepares the new resource, safely publishes it for new requests,
+  and retains the old resource until existing requests no longer reference it.
+  The sidecar does not issue pause, drain, resume, or warmup steps separately.
+
+Each process owns its instance-level completion and failure conditions. The
+sidecar delegates resource loading and execution-resource maintenance to the
+server; it does not manipulate model or Trie objects itself.
+
+## Initial Task combinations
+
+| Task | Update Mode | Update Process |
+| --- | --- | --- |
+| **Task_ckpt** | Rolling Update, at most `n` instances per group | PausedUpdate Process |
+| **Task_Trie** | Sync Update, all target instances concurrently | OnlineUpdate Process |
+
+### Checkpoint Task
+
+After preparing a valid checkpoint, roll through the instances using PausedUpdate
+Process. Reload internally loads weights on every worker, refreshes derived weight
+caches, and preserves or rebuilds affected Graph resources. Warmup verifies that
+the updated instance can execute its workload before business traffic resumes.
+
+### Trie Task
+
+After preparing a valid Trie artifact, invoke OnlineUpdate Process on all target
+instances concurrently. The resource manager creates a new immutable
+ConstraintTable and device Backend, then replaces the published resource instead
+of modifying the active table in place.
+
+Online Trie reload requires server-side version ownership: each request keeps one
+Trie version for its full lifetime. New requests use the new version after it is
+ready; existing requests finish with the old one. Retain matching Backend and
+Graph resources until their users finish, then release them. Preparation failure
+leaves the current resource active.
+
+This online switching capability must be implemented and verified; creating a
+new Backend alone does not make reload safe without pause/drain. Any resource
+preparation needed for online execution belongs inside the server reload process.
+
+## Shared update lifecycle
+
+Every Task follows **Check update -> Download -> Check valid -> Apply update**.
+The Update Mode expands Apply update across instances, and the Update Process
+executes the per-instance actions through HTTP control requests. These control
+requests are independent of the inference protocol.
+
+Track the target version and each instance's progress separately. A Task marks a
+version complete only after all target instances finish their selected process.
+Updates may temporarily serve different versions across instances. Finish or
+recover the current version before applying another version of the same Task.
+
+A failed download or validation does not affect serving. A failed rolling update
+stops subsequent groups and retains the failed instance's update slot until
+recovery. An online update failure retains the last usable resource whenever it
+has not been replaced. Resume from recorded and reconciled per-instance state
+after a retry or sidecar restart; do not assume a timed-out call did not execute.
+
+## Validation goals
+
+- Tasks keep independent configuration, versions, and progress while coordinating
+  update execution on shared target instances.
+- FileSystem implementations download the selected immutable version even when
+  a newer version is published during download.
+- Rolling Update respects `n`; Sync Update dispatches to all configured targets.
+- PausedUpdate preserves drain/reload/resume/warmup ordering and admission state.
+- Online Trie reload preserves in-flight request versions and Graph references,
+  releases old resources safely, and retains service on preparation failure.
+- Both resource types support observable failure, retry, and restart recovery;
+  successful updates produce the expected new weights or Trie candidates.
