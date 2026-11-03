@@ -53,10 +53,41 @@ Use pluggable implementations such as HDFS, P2P, and other storage systems. Star
 with HDFSDownloader; adding another implementation does not change Task scheduling
 or instance update behavior.
 
-Version discovery returns a published version. If it differs from the Task's
-completed version, download using the same monitored address plus the selected
-version and local target directory. The implementation resolves the version's
-storage location. A later publication must not change the version being downloaded.
+The initial interface is:
+
+```python
+from pathlib import Path
+from typing import Protocol
+
+
+class FileSystem(Protocol):
+    async def get_latest_version(self, address: str) -> str | None: ...
+
+    async def download(
+        self, address: str, version: str, target_dir: Path
+    ) -> None: ...
+```
+
+- `get_latest_version` takes the monitored address and returns the latest published
+  version, or `None` if no version is available. Storage access failures raise an
+  exception rather than returning `None`.
+- `download` takes the same monitored address, a selected version, and a local
+  target directory. HDFSDownloader resolves the version's storage location and
+  downloads that exact version. If it is unavailable, raise an exception rather
+  than silently downloading a newer version.
+
+A Task compares the discovered version with its completed version before download:
+
+```python
+version = await filesystem.get_latest_version(address)
+if version is not None and version != completed_version:
+    await filesystem.download(address, version, target_dir)
+    # Validate the downloaded resource, then execute the configured update.
+```
+
+FileSystem owns version discovery and download. Validation, instance scheduling,
+and completed-version state belong to the Task/controller. Downloads remain
+pinned to the selected immutable version even if another version is published.
 
 Download once into Pod-shared storage, then validate completeness, checksums, and
 resource compatibility. Publish a usable local resource only after validation.
