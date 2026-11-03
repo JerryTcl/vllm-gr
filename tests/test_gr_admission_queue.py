@@ -6,6 +6,7 @@
 from collections import deque
 from queue import Queue
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 import msgspec
@@ -162,7 +163,7 @@ def test_worker_reports_loaded_table_not_configuration():
     assert loaded_constraint_trie_count(worker) == 3
 
 
-def worker_receipt(scheduler, scheduled):
+def worker_receipt(scheduler: Any, scheduled: Any) -> ModelRunnerOutput:
     """Build deterministic CPU stage, final-output and fallback retirement receipts."""
     if getattr(scheduled, GR_RETIRE_OUTPUT_ATTR, None) is not None:
         worker_output = release_receipt(scheduled)

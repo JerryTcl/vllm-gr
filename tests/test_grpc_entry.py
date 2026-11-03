@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 import pytest
@@ -19,6 +19,8 @@ pytest.importorskip("smg_grpc_servicer", reason="install vllm-gr[grpc]")
 
 from google.protobuf import descriptor_pb2
 
+from tests.test_gr_admission_queue import core as _admission_core_fixture
+from tests.test_gr_admission_queue import scheduler as _admission_scheduler_fixture
 from vllm_gr.entrypoints.grpc.generated import vllm_engine_pb2 as pb
 from vllm_gr.entrypoints.grpc.generated import vllm_engine_pb2_grpc as rpc
 from vllm_gr.entrypoints.grpc.serving import BeamVllmEngineServicer
@@ -31,6 +33,9 @@ from vllm_gr.v1.beam.batch_contracts import (
     BeamOutputSequence,
     BeamRequestOutput,
 )
+
+scheduler = _admission_scheduler_fixture
+grpc_admission_core = _admission_core_fixture
 
 
 def message(index: int = 0, *, binary: bool = True) -> Any:
@@ -114,6 +119,33 @@ def test_full_request_to_numpy_batch(binary: bool) -> None:
     np.testing.assert_array_equal(tokens, [4, 3])
     assert batch.items[0].request.sampling_params.seed == 7
     assert batch.items[0].request.external_req_id == "id-0"
+
+
+@pytest.mark.parametrize("binary", [False, True])  # type: ignore[misc]
+@pytest.mark.parametrize("trie_id", [None, 0, 1, 2**32 - 1])  # type: ignore[misc]
+def test_per_input_trie_selector_wire_and_batch_mapping(binary: bool, trie_id: int | None) -> None:
+    request = message(binary=binary)
+    if trie_id is not None:
+        request.trie_id = trie_id
+    decoded = pb.GenerateRequest.FromString(request.SerializeToString())
+    assert decoded.HasField("trie_id") == (trie_id is not None)
+    batch, _ = BeamVllmEngineServicer(engine(), 0.0).build_batch([decoded])
+    assert batch.items[0].trie_id == (0 if trie_id is None else trie_id)
+
+
+@pytest.mark.parametrize("trie_id", [0, 1])  # type: ignore[misc]
+def test_npu_trie_selector_matches_http_validation(trie_id: int) -> None:
+    backend = engine()
+    backend.vllm_config = SimpleNamespace(device_config=SimpleNamespace(device="npu:0"))
+    request = message()
+    request.trie_id = trie_id
+    servicer = BeamVllmEngineServicer(backend, 0.0)
+    if trie_id:
+        with pytest.raises(ValueError, match="multi-trie requests currently require CUDA"):
+            servicer.build_batch([request])
+    else:
+        batch, _ = servicer.build_batch([request])
+        assert batch.items[0].trie_id == 0
 
 
 @pytest.mark.parametrize("result_width", [None, 1, 2])  # type: ignore[misc]
@@ -335,6 +367,228 @@ async def connection() -> AsyncIterator[tuple[Any, SimpleNamespace, list[Any], A
             yield rpc.VllmEngineStub(channel), backend, submitted, servicer
     finally:
         await server.stop(0)
+
+
+@pytest.mark.parametrize("binary", [False, True])  # type: ignore[misc]
+@pytest.mark.parametrize("method", ["Generate", "GenerateBatch"])  # type: ignore[misc]
+def test_trie_selection_over_grpc(binary: bool, method: str) -> None:
+    async def run() -> None:
+        async with connection() as (stub, backend, submitted, servicer):
+            if method == "Generate":
+                request = message(binary=binary)
+                request.trie_id = 1
+                replies = [reply async for reply in stub.Generate(request, timeout=5)]
+                assert len(replies) == 2
+                assert [item.trie_id for item in submitted[0].items] == [1]
+            else:
+                requests = [message(i, binary=binary) for i in range(4)]
+                requests[1].trie_id = 1
+                requests[2].trie_id = 0
+                requests[3].trie_id = 1
+                reply = await stub.GenerateBatch(
+                    pb.BatchGenerateRequest(requests=requests), timeout=5
+                )
+                assert [item.request_id for item in reply.items] == [f"id-{i}" for i in range(4)]
+                assert [item.trie_id for item in submitted[0].items] == [0, 1, 0, 1]
+            backend.release_gr_session.assert_awaited_once()
+            assert not servicer._beam_tasks
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("trie_count", [1, 2])  # type: ignore[misc]
+@pytest.mark.parametrize("method", ["Generate", "GenerateBatch"])  # type: ignore[misc]
+def test_invalid_trie_uses_core_admission_and_service_recovers(
+    trie_count: int, method: str
+) -> None:
+    from queue import Queue
+
+    from vllm_gr.v1.engine.core import _handle_submit_gr_session
+    from vllm_gr.v1.engine.wire import register_engine_core_request_types
+
+    register_engine_core_request_types()
+
+    async def run() -> None:
+        async with connection() as (stub, backend, submitted, servicer):
+            original_submit = backend.submit_gr_session
+            core = SimpleNamespace(_gr_trie_count=trie_count, input_queue=Queue())
+
+            async def submit(request: Any) -> Any:
+                # Exercise the real Core admission boundary against the loaded count.
+                _handle_submit_gr_session(core, request)
+                return await original_submit(request)
+
+            backend.submit_gr_session = submit
+            request = message()
+            request.trie_id = trie_count
+
+            async def invoke() -> Any:
+                if method == "Generate":
+                    return [reply async for reply in stub.Generate(request, timeout=5)]
+                return await stub.GenerateBatch(
+                    pb.BatchGenerateRequest(requests=[request]), timeout=5
+                )
+
+            with pytest.raises(grpc.aio.AioRpcError) as caught:
+                await invoke()
+            assert caught.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+            assert "trie_id is outside the loaded constraint table" in caught.value.details()
+            assert not submitted and core.input_queue.empty()
+            assert not servicer._beam_tasks
+            request.ClearField("trie_id")
+            await invoke()
+            assert len(submitted) == 1 and submitted[0].items[0].trie_id == 0
+            assert not core.input_queue.empty()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("binary", [False, True])  # type: ignore[misc]
+@pytest.mark.parametrize("invalid_index", [1, 3])  # type: ignore[misc]
+@pytest.mark.parametrize("cleanup_delay", [0.0, 0.01])  # type: ignore[misc]
+def test_mixed_batch_queue_rejection_is_atomic_and_service_recovers(
+    grpc_admission_core: Any, binary: bool, invalid_index: int, cleanup_delay: float
+) -> None:
+    """Route a later member's rejection through Core output and the RPC collector."""
+    import msgspec
+    from vllm.v1.engine import EngineCoreOutputs
+    from vllm.v1.engine.output_processor import OutputProcessor
+
+    from tests.test_gr_admission_queue import worker_receipt
+    from vllm_gr.v1.engine.gr_async_scheduler import GR_BATCH_RESULT_ATTR
+    from vllm_gr.v1.engine.gr_session_client import (
+        submit_gr_session_async,
+        wait_gr_session_async,
+    )
+
+    core = grpc_admission_core
+    core._gr_trie_count = core.scheduler._gr_trie_count = 2
+    core.add_request = Mock(wraps=core.add_request)
+    core.preprocess_add_request = Mock(wraps=core.preprocess_add_request)
+    free_blocks = core.scheduler.kv_cache_manager.block_pool.get_num_free_blocks()
+
+    def finish_batch(request: Any) -> None:
+        # Keep real admission/retirement; only the model's receipts are synthetic.
+        for _ in range(20):
+            if not core.scheduler.has_requests():
+                break
+            scheduled = core.scheduler.schedule()
+            output = worker_receipt(core.scheduler, scheduled)
+            if output.req_ids:
+                tokens = output.sampled_token_ids[0]
+                output.req_ids = list(scheduled.num_scheduled_tokens)
+                output.req_id_to_index = {rid: i for i, rid in enumerate(output.req_ids)}
+                output.sampled_token_ids = [list(tokens) for _ in output.req_ids]
+            for session_id, result in getattr(output, GR_BATCH_RESULT_ATTR, {}).items():
+                sequences = tuple(
+                    msgspec.structs.replace(sequence, parent_beam_indices=())
+                    for sequence in result.output.items[0].sequences
+                )
+                getattr(output, GR_BATCH_RESULT_ATTR)[session_id] = msgspec.structs.replace(
+                    result,
+                    output=BeamBatchOutput(
+                        tuple(
+                            BeamRequestOutput(item.item_index, item.request.request_id, sequences)
+                            for item in request.items
+                        )
+                    ),
+                )
+            outputs = core.scheduler.update_from_output(scheduled, output)
+            for routed_output in outputs.items():
+                core.output_queue.put_nowait(routed_output)
+        assert not core.scheduler.has_requests()
+
+    async def run() -> None:
+        async with connection() as (stub, backend, submitted, servicer):
+            backend.output_processor = OutputProcessor(None, log_stats=False)
+            backend._run_output_handler = lambda: None
+            delivered = []
+
+            async def send(request: Any) -> None:
+                submitted.append(request)
+                for item in request.items:
+                    item.request.client_index = 3
+                core._handle_submit_gr_session(request)
+                core._process_input_queue()
+                if core.scheduler.has_requests():
+                    finish_batch(request)
+                while not core.output_queue.empty():
+                    client_index, output = core.output_queue.get_nowait()
+                    assert client_index == 3
+                    # Exercise the untyped terminal payload after an IPC round trip.
+                    output = msgspec.msgpack.decode(
+                        msgspec.msgpack.encode(output), type=EngineCoreOutputs
+                    )
+                    delivered.append(output)
+                    backend.output_processor.process_outputs(output.outputs)
+
+            async def submit(request: Any) -> Any:
+                return await submit_gr_session_async(backend, request)
+
+            async def wait(session_id: str, handle: Any) -> Any:
+                return await wait_gr_session_async(backend, session_id, handle)
+
+            backend.engine_core = SimpleNamespace(submit_gr_session_async=send)
+            backend.submit_gr_session = submit
+            backend.wait_gr_session = wait
+            original_close = servicer.client.close
+
+            async def close(session: Any) -> None:
+                # Also exercise a handler whose cleanup yields after sending the error.
+                if cleanup_delay:
+                    await asyncio.sleep(cleanup_delay)
+                await original_close(session)
+
+            servicer.client.close = close
+
+            async def assert_clean() -> None:
+                async def wait_for_handler_cleanup() -> None:
+                    # context.abort can deliver the RPC error before the handler's
+                    # finally block starts, so a snapshot of _close_tasks can be empty.
+                    while servicer._beam_tasks or servicer.client._close_tasks:
+                        await asyncio.sleep(0.001)
+
+                await asyncio.wait_for(wait_for_handler_cleanup(), timeout=5)
+                assert core.input_queue.empty() and core.output_queue.empty()
+                assert not core.scheduler.requests and not core.scheduler.waiting
+                assert not getattr(core.scheduler, "_gr_v1_sessions", {})
+                assert not getattr(core.scheduler, "_gr_v1_request_sessions", {})
+                assert (
+                    core.scheduler.kv_cache_manager.block_pool.get_num_free_blocks() == free_blocks
+                )
+                assert not backend.output_processor.request_states
+                assert not backend.output_processor.external_req_ids
+                assert not servicer._beam_tasks and not servicer.client._close_tasks
+
+            requests = [message(i, binary=binary) for i in range(4)]
+            for request, trie_id in zip(requests, [0, 1, 0, 1], strict=True):
+                request.trie_id = trie_id
+                request.sampling_params.n = request.beam_search.beam_width = 4
+            requests[invalid_index].trie_id = 2
+            with pytest.raises(grpc.aio.AioRpcError) as caught:
+                await stub.GenerateBatch(pb.BatchGenerateRequest(requests=requests), timeout=5)
+            assert caught.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+            assert "trie_id is outside the loaded constraint table" in caught.value.details()
+            core.preprocess_add_request.assert_not_called()
+            core.add_request.assert_not_called()
+            assert len(delivered) == 1
+            owner = submitted[0].items[0].request.request_id
+            assert delivered[0].finished_requests == {owner}
+            assert [output.request_id for output in delivered[0].outputs] == [owner]
+            await assert_clean()
+            backend.release_gr_session.assert_awaited_once_with(owner)
+
+            # Reuse external IDs, so leaked frontend registrations cannot hide.
+            requests[invalid_index].trie_id = invalid_index % 2
+            reply = await stub.GenerateBatch(pb.BatchGenerateRequest(requests=requests), timeout=5)
+            assert [item.request_id for item in reply.items] == [f"id-{i}" for i in range(4)]
+            assert all(len(item.beams.output_offsets) == 5 for item in reply.items)
+            assert core.add_request.call_count == 4
+            await assert_clean()
+            assert backend.release_gr_session.await_count == 2
+            backend.abort_gr_session.assert_not_awaited()
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("encoding", ["binary", "repeated", "mixed"])  # type: ignore[misc]
