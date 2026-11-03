@@ -7,8 +7,9 @@ Checkpoint updates change model weights only; Trie updates change constraint
 contents only. Model architecture, tokenizer, resource formats, and serving
 configuration remain unchanged.
 
-This document describes the architecture and responsibilities. Concrete APIs,
-configuration schemas, and implementation details are deferred.
+This document describes the architecture, responsibilities, the agreed FileSystem
+interface, and a proposed user configuration. Other APIs, configuration validation
+rules, and implementation details are deferred.
 
 ## Architecture
 
@@ -168,6 +169,74 @@ stops subsequent groups and retains the failed instance's update slot until
 recovery. An online update failure retains the last usable resource whenever it
 has not been replaced. Resume from recorded and reconciled per-instance state
 after a retry or sidecar restart; do not assume a timed-out call did not execute.
+
+## User configuration example
+
+The Sidecar shares an instance list and a persistent state directory. Each Task
+selects its resource source, polling interval, local cache, target instances,
+Update Mode, and Update Process independently. This YAML is a proposed user-facing
+configuration, not an implemented parser contract.
+
+```yaml
+state_dir: /updates/state
+
+instances:
+  - {id: node-0, control_url: "http://127.0.0.1:9100"}
+  - {id: node-1, control_url: "http://127.0.0.1:9101"}
+  - {id: node-2, control_url: "http://127.0.0.1:9102"}
+  - {id: node-3, control_url: "http://127.0.0.1:9103"}
+  - {id: node-4, control_url: "http://127.0.0.1:9104"}
+  - {id: node-5, control_url: "http://127.0.0.1:9105"}
+  - {id: node-6, control_url: "http://127.0.0.1:9106"}
+  - {id: node-7, control_url: "http://127.0.0.1:9107"}
+
+tasks:
+  - name: ckpt
+    resource_type: checkpoint
+    target_instances: all
+    poll_interval_seconds: 30
+    filesystem:
+      type: hdfs
+      address: hdfs://cluster/models/gr/checkpoints
+    target_dir: /updates/checkpoints
+    update_mode:
+      type: rolling
+      max_concurrent_updates: 1
+    update_process:
+      type: paused_update
+
+  - name: trie
+    resource_type: trie
+    target_instances: all
+    poll_interval_seconds: 60
+    filesystem:
+      type: hdfs
+      address: hdfs://cluster/models/gr/tries
+    target_dir: /updates/tries
+    update_mode:
+      type: sync
+    update_process:
+      type: online_update
+```
+
+- `instances` lists service control endpoints; its length is independent of the
+  physical GPU count. Tasks can target `all` or a list of instance IDs.
+- Each Task's `filesystem.address` is passed to both version lookup and download.
+  `target_dir` is that Task's shared local cache root; the actual download target
+  is a temporary version directory below it, published only after validation.
+- `resource_type` selects resource validation and reload behavior. `filesystem.type`
+  selects the storage implementation; future P2P support uses the same abstraction.
+- `rolling` limits each group to `max_concurrent_updates` instances (default 1).
+  `sync` targets all selected instances concurrently and has no rolling group size.
+- `paused_update` means Pause/Drain -> Reload -> Resume/Warmup. `online_update`
+  means direct Reload with safe version switching owned by the server.
+- `state_dir` stores independent version and per-instance progress for each Task.
+  Updates targeting the same instance are coordinated across Tasks, even when their
+  discovery and download loops run independently.
+
+The initial combinations are checkpoint + rolling + paused_update and
+Trie + sync + online_update. Process-specific settings, such as warmup inputs and
+timeouts, can be added under `update_process` when those APIs are agreed.
 
 ## Validation goals
 
