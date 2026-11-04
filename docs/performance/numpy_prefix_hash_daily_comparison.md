@@ -156,8 +156,8 @@ N 与 B 仅 `vllm_gr/v1/engine/engine_core_patch.py` 不同，未带入 prompt l
 
 ## 本分支的代码修改
 
-NumPy block hash 从 `tuple(map(int, block))` 改为小端 int64 字节编码，使用版本标记 `vllm-gr-numpy-int64-v1`；首次整链计算与后续增量计算采用同一格式。普通 list 路径沿用原有格式。NumPy 的 block hash 值随之改变。
+NumPy block hash 从 `tuple(map(int, block))` 改为小端 int64 字节编码，使用版本标记 `vllm-gr-numpy-int64-v1`；首次整链计算与后续增量计算采用同一格式。hash 接口按 GR 的 ndarray 输入处理，不保留 list/tuple 兼容分支。NumPy 的 block hash 值随之改变。
 
-代码位于 [engine_core_patch.py](../../vllm_gr/v1/engine/engine_core_patch.py)，对应测试位于 [test_numpy_tokens.py](../../tests/test_numpy_tokens.py)。未带入其它本地优化。
+代码位于 [engine_core_patch.py](../../vllm_gr/v1/engine/engine_core_patch.py)，对应测试位于 [test_numpy_tokens.py](../../tests/test_numpy_tokens.py)。未带入其它本地优化。归档的性能数据及补丁保持原样；本分支随后删除了 hash 中的类型判断和 list/tuple 分支，未重新测量性能。
 
 本次只整理数据并将修改移到最新 main，没有重跑测试。此前旧测试环境中的相关 CPU 回归为 69 项通过；本分支基于 main 的测试尚未执行。归档不包含模型、原始 Parquet、完整日志和编译产物。
