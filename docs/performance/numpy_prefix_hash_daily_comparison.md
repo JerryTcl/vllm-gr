@@ -1,6 +1,6 @@
 # Daily 配方离线性能对比：list、NumPy 与 NumPy hash 优化
 
-本文整理 2026-11-04 已完成的两组测试，复用已有结果，不重新运行测试。第一组为 gRPC/NumPy 合入前后的对比；第二组包含 NumPy hash 优化后的对比。两组结果分别统计。
+第一组为 gRPC/NumPy 合入前后的对比；第二组包含 NumPy hash 优化后的对比。两组结果分别统计。
 
 ## 1. Daily 配方：list vs NumPy
 
