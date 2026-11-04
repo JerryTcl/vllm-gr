@@ -2,9 +2,53 @@
 
 本文整理 2026-11-04 已完成的两组测试，复用已有结果，不重新运行测试。第一组为 gRPC/NumPy 合入前后的对比；第二组包含 NumPy hash 优化后的对比。两组结果分别统计。
 
-本分支基于 main `55b9f42`，带入 NumPy hash 优化及对应测试。下文性能数据来自表中列出的测试 commit 与补丁，不是基于该 main 版本重新测量的结果。
+## 1. Daily 配方：list vs NumPy
+
+| 版本 | 第一轮均值 ms | 第二轮均值 ms | 合并均值 ms | 合并 P50 ms | 合并 P90 ms |
+|---|---:|---:|---:|---:|---:|
+| list / base | 38.373272 | 38.263856 | **38.318564** | 38.275693 | 38.567880 |
+| NumPy | 38.528624 | 38.476963 | **38.502794** | 38.451582 | 38.738080 |
+
+NumPy 相对 list：均值 **+0.184230 ms（+0.48%）**，P90 **+0.170200 ms**。
+
+## 2. Daily 配方：list vs NumPy opt
+
+| 版本 | 第一轮均值 ms | 第二轮均值 ms | 合并均值 ms | 合并 P50 ms | 合并 P90 ms |
+|---|---:|---:|---:|---:|---:|
+| list / #552 only | 38.344665 | 38.546824 | **38.445744** | 38.283423 | 38.951362 |
+| NumPy 未优化 | 38.731840 | 38.715555 | **38.723698** | 38.565624 | 39.205201 |
+| NumPy opt | 38.544250 | 38.571914 | **38.558082** | 38.469376 | 38.958944 |
+
+| 对比 | 均值变化 ms | P90 变化 ms |
+|---|---:|---:|
+| NumPy 未优化 − list | +0.277954 | +0.253839 |
+| **NumPy opt − list** | **+0.112338** | **+0.007582** |
+| NumPy opt − NumPy 未优化 | −0.165616 | −0.246257 |
 
 ## 共同测试方法
+
+### 对比版本与运行顺序
+
+#### 第一组：list vs NumPy
+
+两版均使用 `git archive` 导出的干净源码，不含本地 prompt list 复用或 hash 优化补丁。
+
+| 标记 | 版本 | 测试 commit |
+|---|---|---|
+| A | list / base | `33a1fdb2e39dea9e30f648405bd263eb62b15323` |
+| B | gRPC/NumPy 合入后 | `ecccac6dab44dbbf38397b1c757aa9b7b6c7ed60` |
+
+版本范围包含 #552 和 #542。执行顺序 **A1 → B1 → B2 → A2**，共 400 个 miss 样本，全部成功。
+
+#### 第二组：list vs NumPy opt
+
+| 标记 | 版本 | 测试 commit / 补丁 |
+|---|---|---|
+| A | list / #552 only | `d2b91452fb8144f3e3cf4cbf9127df1b9ecda132` |
+| B | NumPy 未优化 | `ecccac6dab44dbbf38397b1c757aa9b7b6c7ed60` |
+| N | NumPy opt | `ecccac6d` + NumPy block 字节 hash 优化 |
+
+N 与 B 仅 `vllm_gr/v1/engine/engine_core_patch.py` 不同，未带入 prompt list 复用改动。执行顺序 **A1 → B1 → N1 → N2 → B2 → A2**，共 600 个 miss 样本，全部成功。
 
 ### 脚本
 
@@ -14,9 +58,8 @@
 - commit：`1c322fd629f4269a050fccc884214944181286d2`。
 - 脚本：[tools/daily_benchmark/run_offline_benchmark.py](https://github.com/DINGEde/vllm-gr-performance-dashboard/blob/1c322fd629f4269a050fccc884214944181286d2/tools/daily_benchmark/run_offline_benchmark.py)。
 - SHA256：`f607d9c0feec9490ff704288f5f53be7973b5fbe2f56c637733f1576e41acc01`。
-- [原版脚本快照](./numpy-prefix-hash-daily-20261104/run_offline_benchmark.py)。
 
-各组 `run.py` 负责导出源码、准备数据目录、设置环境和按顺序启动 CLI；API 计时由原版 daily 脚本的 `measure_request_canonical()` 完成。
+每组先导出对应 commit 的源码，准备独立数据目录，再按表中顺序启动 CLI。API 计时由原版 daily 脚本的 `measure_request_canonical()` 完成。
 
 ### 输入数据
 
@@ -71,7 +114,7 @@ KV cache reset 不清除 CPU hash memo；按上述预热和 miss/hit 顺序执�
 
 ### 单轮 CLI
 
-各轮完整实际命令均归档为 `command.json`。模板如下，四个路径变量分别指 Python、dashboard、对应源码和本地模型；每轮使用新的 DATA_DIR 与 RESULT：
+启动命令如下。`PYTHON`、`DASHBOARD`、`SOURCE`、`MODEL` 分别指 Python、dashboard 仓库、对应 commit 的源码和本地模型路径；每轮使用新的 `DATA_DIR` 与 `RESULT`：
 
 ```bash
 export VLLM_USE_V2_MODEL_RUNNER=0
@@ -91,73 +134,12 @@ cd "$SOURCE"
   --input-length 1024 --batch-size 1
 ```
 
-CUDA/linker 等本机环境见两组各自的 `env.json`。归档启动器保留实际测试机器路径。
 
-## 1. Daily 配方：list vs NumPy
 
-直接运行上述原版 daily CLI。两版均使用 `git archive` 导出的干净源码，不含本地 prompt list 复用或 hash 优化补丁。
+## 本分支与测试版本
 
-| 标记 | 版本 | 测试 commit |
-|---|---|---|
-| A | list / base | `33a1fdb2e39dea9e30f648405bd263eb62b15323` |
-| B | gRPC/NumPy 合入后 | `ecccac6dab44dbbf38397b1c757aa9b7b6c7ed60` |
+本分支基于 main `55b9f42`，仅带入 NumPy block hash 优化及对应测试。优化将 `tuple(map(int, block))` 替换为 ndarray 的 `.tobytes()`，首次整链与后续增量计算使用同一编码。
 
-版本范围包含 #552 和 #542。执行顺序 **A1 → B1 → B2 → A2**，共 400 个 miss 样本，全部成功。
+上面的数据复用此前测试，未在最新 main 上重跑。实测优化版本在 `ecccac6d` 上修改了 hash 路径；本分支随后删除了类型兼容分支、额外格式标记及字节序转换，未重新测量性能。此前测试环境中的相关 CPU 回归为 69 项通过，本分支测试未重新执行。
 
-| 版本 | 第一轮均值 ms | 第二轮均值 ms | 合并均值 ms | 合并 P50 ms | 合并 P90 ms |
-|---|---:|---:|---:|---:|---:|
-| list / base | 38.373272 | 38.263856 | **38.318564** | 38.275693 | 38.567880 |
-| NumPy | 38.528624 | 38.476963 | **38.502794** | 38.451582 | 38.738080 |
-
-NumPy 相对 list：均值 **+0.184230 ms（+0.48%）**，P90 **+0.170200 ms**。
-
-归档：
-
-- [启动器](./numpy-prefix-hash-daily-20261104/list-vs-numpy/run.py)
-- [汇总统计](./numpy-prefix-hash-daily-20261104/list-vs-numpy/comparison.json)
-- [数据校验](./numpy-prefix-hash-daily-20261104/list-vs-numpy/dataset-verification.json)
-- [版本与脚本溯源](./numpy-prefix-hash-daily-20261104/list-vs-numpy/provenance.json)
-- [运行环境](./numpy-prefix-hash-daily-20261104/list-vs-numpy/env.json)
-- `list-vs-numpy/{A1,B1,B2,A2}/`：各轮 `command.json` 与 `raw-result.json`。
-
-## 2. Daily 配方：list vs NumPy opt
-
-仍直接运行同一原版 daily CLI，输入文件、100 条抽样、模型、tokenizer、约束表、环境、参数与计时方法同上。
-
-| 标记 | 版本 | 测试 commit / 补丁 |
-|---|---|---|
-| A | list / #552 only | `d2b91452fb8144f3e3cf4cbf9127df1b9ecda132` |
-| B | NumPy 未优化 | `ecccac6dab44dbbf38397b1c757aa9b7b6c7ed60` |
-| N | NumPy opt | `ecccac6d` + 下方归档的 hash 补丁 |
-
-N 与 B 仅 `vllm_gr/v1/engine/engine_core_patch.py` 不同，未带入 prompt list 复用改动。执行顺序 **A1 → B1 → N1 → N2 → B2 → A2**，共 600 个 miss 样本，全部成功。
-
-| 版本 | 第一轮均值 ms | 第二轮均值 ms | 合并均值 ms | 合并 P50 ms | 合并 P90 ms |
-|---|---:|---:|---:|---:|---:|
-| list / #552 only | 38.344665 | 38.546824 | **38.445744** | 38.283423 | 38.951362 |
-| NumPy 未优化 | 38.731840 | 38.715555 | **38.723698** | 38.565624 | 39.205201 |
-| NumPy opt | 38.544250 | 38.571914 | **38.558082** | 38.469376 | 38.958944 |
-
-| 对比 | 均值变化 ms | P90 变化 ms |
-|---|---:|---:|
-| NumPy 未优化 − list | +0.277954 | +0.253839 |
-| **NumPy opt − list** | **+0.112338** | **+0.007582** |
-| NumPy opt − NumPy 未优化 | −0.165616 | −0.246257 |
-
-归档：
-
-- [启动器](./numpy-prefix-hash-daily-20261104/list-vs-numpy-opt/run.py)
-- [汇总统计](./numpy-prefix-hash-daily-20261104/list-vs-numpy-opt/comparison.json)
-- [数据校验](./numpy-prefix-hash-daily-20261104/list-vs-numpy-opt/dataset-verification.json)
-- [版本与脚本溯源](./numpy-prefix-hash-daily-20261104/list-vs-numpy-opt/provenance.json)
-- [运行环境](./numpy-prefix-hash-daily-20261104/list-vs-numpy-opt/env.json)
-- [实际测量的 hash 补丁](./numpy-prefix-hash-daily-20261104/list-vs-numpy-opt/hash-only.patch)，SHA256：`bacee4a4ed86d0f63cc7224d4f801a496ec908d049c234da5500e03d5c819be8`。
-- `list-vs-numpy-opt/{A1,B1,N1,N2,B2,A2}/`：各轮 `command.json` 与 `raw-result.json`。
-
-## 本分支的代码修改
-
-NumPy block hash 从 `tuple(map(int, block))` 改为直接使用 int64 ndarray 的 `.tobytes()`；首次整链计算与后续增量计算采用同一格式。hash 接口按 GR 的 ndarray 输入处理，不保留 list/tuple 兼容分支。NumPy 的 block hash 值随之改变。
-
-代码位于 [engine_core_patch.py](../../vllm_gr/v1/engine/engine_core_patch.py)，对应测试位于 [test_numpy_tokens.py](../../tests/test_numpy_tokens.py)。未带入其它本地优化。归档的性能数据及补丁保持原样；本分支随后简化了 hash 代码，删除类型判断、list/tuple 分支、额外格式标记及字节序转换，未重新测量性能。
-
-本次只整理数据并将修改移到最新 main，没有重跑测试。此前旧测试环境中的相关 CPU 回归为 69 项通过；本分支基于 main 的测试尚未执行。归档不包含模型、原始 Parquet、完整日志和编译产物。
+代码：[engine_core_patch.py](../../vllm_gr/v1/engine/engine_core_patch.py)。原始测试记录保留在测试机器，本分支只保留本总结文档。
