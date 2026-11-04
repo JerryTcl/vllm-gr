@@ -888,7 +888,7 @@ def apply_kv_hash_memo_patch() -> None:
     (re-sent beam suffixes, popular prefixes) re-hash identical blocks on
     every request — ~1.3ms of sha256 work per 1024-token prompt — so a
     bounded FIFO memo turns those hits into dict lookups.  First-seen blocks
-    construct a byte key from the GR int64 ndarray. The wrapper is
+    construct a token-bytes key. The wrapper is
     idempotent and installs on the module attribute
     (``request_block_hasher`` resolves it as a module global at call time,
     so every existing and future hasher picks it up).
@@ -917,20 +917,19 @@ def apply_kv_hash_memo_patch() -> None:
     def hash_block_tokens_memo(
         hash_function, parent_block_hash, curr_block_token_ids, extra_keys=None
     ):
-        # GR supplies contiguous int64 ndarray blocks. Both initial and
-        # incremental hashing use the same little-endian byte encoding.
-        token_bytes = curr_block_token_ids.astype("<i8", copy=False).tobytes()
-        parent = parent_block_hash or kv_cache_utils.NONE_HASH
-        key = (hash_function, parent, token_bytes, extra_keys)
-        if not _CHAIN_FALLBACK_ACTIVE:
-            hit = memo.get(key)
-            if hit is not None:
-                return hit
-        hit = kv_cache_utils.BlockHash(
-            hash_function((parent, _NUMPY_BLOCK_HASH_DOMAIN, token_bytes, extra_keys))
+        curr_block_token_ids = curr_block_token_ids.tobytes()
+        hash_input = (
+            parent_block_hash or kv_cache_utils.NONE_HASH,
+            curr_block_token_ids,
+            extra_keys,
         )
         if _CHAIN_FALLBACK_ACTIVE:
+            return kv_cache_utils.BlockHash(hash_function(hash_input))
+        key = (hash_function, *hash_input)
+        hit = memo.get(key)
+        if hit is not None:
             return hit
+        hit = kv_cache_utils.BlockHash(hash_function(hash_input))
         if len(memo) >= _KV_HASH_MEMO_LIMIT:
             # Constant-time FIFO eviction keeps the memo bounded in
             # long-running servers under varied (never-repeating) traffic.
@@ -946,7 +945,6 @@ def apply_kv_hash_memo_patch() -> None:
     logger.info("[vllm-gr] kv block-hash memo patch applied.")
 
 
-_NUMPY_BLOCK_HASH_DOMAIN = b"vllm-gr-numpy-int64-v1"
 _CHAIN_MEMO_LIMIT = 1024
 
 
@@ -961,10 +959,10 @@ def _apply_block_hash_chain_memo_patch(kv_cache_utils) -> None:
     (hash_function, block_size, salt, the full-block token prefix), so a
     hit can replay the whole list in one dict lookup.
 
-    A MISS hashes GR ndarray tokens in a versioned little-endian int64 byte
-    format. Incremental hashing uses the same format in hash_block_tokens_memo.
-    Eligibility below proves that extra keys are absent. The completed chain is recorded for a
-    repeat of this exact prompt, without per-block memo bookkeeping.
+    A MISS hashes ndarray block bytes directly with the configured hash
+    function, using the same encoding as incremental hashing. Eligibility proves
+    that extra keys are absent. No per-block memo bookkeeping is needed;
+    the chain entry is still recorded for a repeat of this exact prompt.
 
     Fast-path eligibility is conservative: any incremental call
     (``block_hashes`` non-empty), mm_features, lora_request, a non-``None``
@@ -1003,8 +1001,7 @@ def _apply_block_hash_chain_memo_patch(kv_cache_utils) -> None:
 
             # Only the full-block prefix participates in hashing; trailing
             # partial-block tokens never reach hash_block_tokens.
-            prefix = request.all_token_ids[: num_full_blocks * block_size]
-            tokens = prefix.astype("<i8", copy=False)
+            tokens = request.all_token_ids[: num_full_blocks * block_size]
             key = (caching_hash_fn, block_size, tokens.tobytes())
             hit = chain_memo.get(key)
             if hit is not None:
@@ -1013,14 +1010,19 @@ def _apply_block_hash_chain_memo_patch(kv_cache_utils) -> None:
             _CHAIN_FALLBACK_ACTIVE = True
             try:
                 # Eligibility above proves every block has no extra keys.
-                # Hash block bytes directly, without Python integer conversion.
+                # Use the same block-byte encoding as hash_block_tokens_memo.
                 result = []
                 parent_hash = None
                 for start in range(0, len(tokens), block_size):
-                    block = tokens[start : start + block_size]
-                    parent = parent_hash or kv_cache_utils.NONE_HASH
-                    hash_input = (parent, _NUMPY_BLOCK_HASH_DOMAIN, block.tobytes(), None)
-                    parent_hash = kv_cache_utils.BlockHash(caching_hash_fn(hash_input))
+                    parent_hash = kv_cache_utils.BlockHash(
+                        caching_hash_fn(
+                            (
+                                parent_hash or kv_cache_utils.NONE_HASH,
+                                tokens[start : start + block_size].tobytes(),
+                                None,
+                            )
+                        )
+                    )
                     result.append(parent_hash)
             finally:
                 _CHAIN_FALLBACK_ACTIVE = False

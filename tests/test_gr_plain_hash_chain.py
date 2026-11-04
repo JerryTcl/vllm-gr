@@ -53,7 +53,6 @@ def test_gr_chain_matches_block_byte_encoding(monkeypatch: Any, block_size: int,
         parent = _hash(
             (
                 parent or kv_cache_utils.NONE_HASH,
-                b"vllm-gr-numpy-int64-v1",
                 request.all_token_ids[start : start + block_size].tobytes(),
                 None,
             )

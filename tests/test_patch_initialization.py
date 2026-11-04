@@ -326,7 +326,7 @@ def test_kv_hash_memo_patch_equivalence_and_hits() -> None:
         assert first == second
         # The GR hash uses canonical token bytes and its format marker.
         assert first == sha_fn(
-            (kv_cache_utils.NONE_HASH, b"vllm-gr-numpy-int64-v1", tokens.tobytes(), None)
+            (kv_cache_utils.NONE_HASH, tokens.tobytes(), None)
         )
         # Different tokens -> different hash (no false hits).
         assert wrapped(sha_fn, None, np.concatenate((tokens[:-1], [999])), None) != first
