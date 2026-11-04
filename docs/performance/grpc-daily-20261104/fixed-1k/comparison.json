@@ -1,0 +1,226 @@
+{
+  "provenance": {
+    "commits": {
+      "A": "33a1fdb2e39dea9e30f648405bd263eb62b15323",
+      "C": "d2b91452fb8144f3e3cf4cbf9127df1b9ecda132",
+      "B": "ecccac6dab44dbbf38397b1c757aa9b7b6c7ed60"
+    },
+    "daily_script_sha256": "f607d9c0feec9490ff704288f5f53be7973b5fbe2f56c637733f1576e41acc01",
+    "mode": "fixed first real RecIF prompt; daily kwargs and canonical timer; probes collected only after canonical samples"
+  },
+  "prompt_sha256": "a8db8b3f55809cc72f1c0ebaa90125e03b57f5e923dba490e99fb4c839f09e2e",
+  "canonical_runs": {
+    "A1": {
+      "mean": 38.21078428,
+      "std": 0.21418274889939565,
+      "p50": 38.136168999999995,
+      "p90": 38.4330672,
+      "p95": 38.833292199999995,
+      "p99": 39.054070710000005,
+      "unit": "ms"
+    },
+    "C1": {
+      "mean": 38.150946479999995,
+      "std": 0.18762802303294004,
+      "p50": 38.1219085,
+      "p90": 38.1978432,
+      "p95": 38.2297025,
+      "p99": 38.437282180000004,
+      "unit": "ms"
+    },
+    "C2": {
+      "mean": 38.32745206,
+      "std": 0.2944351909918659,
+      "p50": 38.181377999999995,
+      "p90": 38.8149069,
+      "p95": 38.954525000000004,
+      "p99": 39.112281429999996,
+      "unit": "ms"
+    },
+    "B1": {
+      "mean": 38.34626977,
+      "std": 0.29630331214432454,
+      "p50": 38.192912,
+      "p90": 38.8268452,
+      "p95": 38.8718617,
+      "p99": 39.10200512,
+      "unit": "ms"
+    },
+    "B2": {
+      "mean": 38.36500028,
+      "std": 0.28360828043497216,
+      "p50": 38.213691499999996,
+      "p90": 38.7677957,
+      "p95": 38.8477429,
+      "p99": 38.987924430000014,
+      "unit": "ms"
+    },
+    "B3": {
+      "mean": 38.261810770000004,
+      "std": 0.0706329730649723,
+      "p50": 38.24195,
+      "p90": 38.3242304,
+      "p95": 38.40957685,
+      "p99": 38.47387927,
+      "unit": "ms"
+    }
+  },
+  "isolated_cpu": {
+    "frontend_request": {
+      "before_us": 100.085156,
+      "after_us": 134.744471,
+      "delta_us": 34.65931500000001
+    },
+    "native_request_and_hash": {
+      "before_us": 15.425066000000001,
+      "after_us": 11.878313,
+      "delta_us": -3.5467530000000007
+    },
+    "validate_contract_once": {
+      "before_us": 1.807749,
+      "after_us": 3.867993,
+      "delta_us": 2.060244
+    },
+    "prompt_boundaries": {
+      "before_us": 2.179198,
+      "after_us": 13.511612,
+      "delta_us": 11.332414
+    },
+    "compact_output": {
+      "before_us": 97.215643,
+      "after_us": 110.142575,
+      "delta_us": 12.926931999999994
+    }
+  },
+  "live_cpu_probes": {
+    "input.native_processor": {
+      "before_us": 38.760616666666664,
+      "after_us": 38.051,
+      "delta_us": -0.7096166666666619,
+      "calls_per_request": 1.0
+    },
+    "validation.batch_contract": {
+      "before_us": 28.51075,
+      "after_us": 64.43541666666667,
+      "delta_us": 35.92466666666667,
+      "calls_per_request": 5.0
+    },
+    "validation.gr_request": {
+      "before_us": 53.508383333333335,
+      "after_us": 90.99328333333332,
+      "delta_us": 37.48489999999999,
+      "calls_per_request": 5.0
+    },
+    "input.build_batch": {
+      "before_us": 55.95698333333333,
+      "after_us": 110.36806666666666,
+      "delta_us": 54.41108333333333,
+      "calls_per_request": 1.0
+    },
+    "input.process_offline": {
+      "before_us": 221.0019333333333,
+      "after_us": 270.6607333333334,
+      "delta_us": 49.65880000000007,
+      "calls_per_request": 1.0
+    },
+    "frontend.prepare": {
+      "before_us": 225.05463333333336,
+      "after_us": 274.78048333333334,
+      "delta_us": 49.72584999999998,
+      "calls_per_request": 1.0
+    },
+    "hash.request_blocks": {
+      "before_us": 22.44488333333333,
+      "after_us": 23.017366666666668,
+      "delta_us": 0.5724833333333379,
+      "calls_per_request": 4.0
+    },
+    "request.update_hashes": {
+      "before_us": 35.95451666666666,
+      "after_us": 36.58058333333334,
+      "delta_us": 0.6260666666666737,
+      "calls_per_request": 5.0
+    },
+    "request.native_init": {
+      "before_us": 33.10973333333334,
+      "after_us": 14.554133333333333,
+      "delta_us": -18.555600000000005,
+      "calls_per_request": 1.0
+    },
+    "core.preprocess_add": {
+      "before_us": 39.54365,
+      "after_us": 48.494600000000005,
+      "delta_us": 8.950950000000006,
+      "calls_per_request": 1.0
+    },
+    "core.admit_session": {
+      "before_us": 109.51611666666666,
+      "after_us": 126.01913333333334,
+      "delta_us": 16.50301666666668,
+      "calls_per_request": 1.0
+    },
+    "core.submit": {
+      "before_us": 146.10763333333335,
+      "after_us": 165.03215,
+      "delta_us": 18.924516666666648,
+      "calls_per_request": 1.0
+    },
+    "scheduler.schedule": {
+      "before_us": 468.2722166666667,
+      "after_us": 456.8589166666667,
+      "delta_us": -11.413299999999992,
+      "calls_per_request": 4.0
+    },
+    "worker.detach_inputs": {
+      "before_us": 30.285066666666665,
+      "after_us": 29.658933333333337,
+      "delta_us": -0.6261333333333283,
+      "calls_per_request": 3.0
+    },
+    "worker.final_output_consume": {
+      "before_us": 94.50215,
+      "after_us": 90.38826666666665,
+      "delta_us": -4.113883333333348,
+      "calls_per_request": 1.0
+    },
+    "engine.wait": {
+      "before_us": 37694.817566666665,
+      "after_us": 37642.105533333335,
+      "delta_us": -52.7120333333296,
+      "calls_per_request": 1.0
+    },
+    "output.prompt_boundaries": {
+      "before_us": 3.6738999999999997,
+      "after_us": 25.53376666666667,
+      "delta_us": 21.85986666666667,
+      "calls_per_request": 1.0
+    },
+    "output.process": {
+      "before_us": 108.30064999999999,
+      "after_us": 128.9103,
+      "delta_us": 20.609650000000016,
+      "calls_per_request": 1.0
+    },
+    "frontend.output": {
+      "before_us": 114.03558333333334,
+      "after_us": 134.9056,
+      "delta_us": 20.870016666666658,
+      "calls_per_request": 1.0
+    },
+    "session.close": {
+      "before_us": 3.3619499999999998,
+      "after_us": 3.308866666666667,
+      "delta_us": -0.05308333333333293,
+      "calls_per_request": 1.0
+    }
+  },
+  "before_mean_ms": 38.23919927,
+  "after_mean_ms": 38.355635025,
+  "delta_ms": 0.1164357549999977,
+  "ablation_means_ms": {
+    "normal_before": 38.21764406,
+    "without_new_numpy_guard": 38.08375894,
+    "without_guard_and_repeated_prompt_materialization": 38.07253255,
+    "normal_restored": 38.12243759
+  }
+}

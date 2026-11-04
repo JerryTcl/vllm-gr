@@ -1,0 +1,9 @@
+{
+  "commits": {
+    "A": "33a1fdb2e39dea9e30f648405bd263eb62b15323",
+    "C": "d2b91452fb8144f3e3cf4cbf9127df1b9ecda132",
+    "B": "ecccac6dab44dbbf38397b1c757aa9b7b6c7ed60"
+  },
+  "daily_script_sha256": "f607d9c0feec9490ff704288f5f53be7973b5fbe2f56c637733f1576e41acc01",
+  "mode": "fixed first real RecIF prompt; daily kwargs and canonical timer; probes collected only after canonical samples"
+}
