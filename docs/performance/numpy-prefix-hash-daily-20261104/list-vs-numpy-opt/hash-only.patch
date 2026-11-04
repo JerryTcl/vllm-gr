@@ -1,0 +1,122 @@
+diff --git a/vllm_gr/v1/engine/engine_core_patch.py b/vllm_gr/v1/engine/engine_core_patch.py
+index 80d5a39..f88a971 100644
+--- a/vllm_gr/v1/engine/engine_core_patch.py
++++ b/vllm_gr/v1/engine/engine_core_patch.py
+@@ -919,22 +919,42 @@ def apply_kv_hash_memo_patch() -> None:
+     ):
+         import numpy as np
+ 
+-        if isinstance(curr_block_token_ids, np.ndarray):
+-            curr_block_token_ids = tuple(map(int, curr_block_token_ids))
++        array_tokens = isinstance(curr_block_token_ids, np.ndarray)
++        if array_tokens:
++            # GR contracts require contiguous int64 tokens. Canonicalize byte
++            # order without creating Python integers; use the same encoding
++            # for whole-chain cold hashing and native incremental hashing.
++            curr_block_token_ids = curr_block_token_ids.astype("<i8", copy=False).tobytes()
++            parent_block_hash = parent_block_hash or kv_cache_utils.NONE_HASH
++
++        def compute_hash():
++            if array_tokens:
++                return kv_cache_utils.BlockHash(
++                    hash_function(
++                        (
++                            parent_block_hash,
++                            _NUMPY_BLOCK_HASH_DOMAIN,
++                            curr_block_token_ids,
++                            extra_keys,
++                        )
++                    )
++                )
++            return original(hash_function, parent_block_hash, curr_block_token_ids, extra_keys)
++
+         if _CHAIN_FALLBACK_ACTIVE:
+             # Chain-memo miss in flight: hash at stock speed (see
+             # _CHAIN_FALLBACK_ACTIVE).
+-            return original(hash_function, parent_block_hash, curr_block_token_ids, extra_keys)
++            return compute_hash()
+         key = (
+             hash_function,
+             parent_block_hash,
+-            tuple(curr_block_token_ids),
++            curr_block_token_ids if array_tokens else tuple(curr_block_token_ids),
+             extra_keys,
+         )
+         hit = memo.get(key)
+         if hit is not None:
+             return hit
+-        hit = original(hash_function, parent_block_hash, curr_block_token_ids, extra_keys)
++        hit = compute_hash()
+         if len(memo) >= _KV_HASH_MEMO_LIMIT:
+             # Constant-time FIFO eviction keeps the memo bounded in
+             # long-running servers under varied (never-repeating) traffic.
+@@ -950,6 +970,7 @@ def apply_kv_hash_memo_patch() -> None:
+     logger.info("[vllm-gr] kv block-hash memo patch applied.")
+ 
+ 
++_NUMPY_BLOCK_HASH_DOMAIN = b"vllm-gr-numpy-int64-v1"
+ _CHAIN_MEMO_LIMIT = 1024
+ 
+ 
+@@ -964,10 +985,11 @@ def _apply_block_hash_chain_memo_patch(kv_cache_utils) -> None:
+     (hash_function, block_size, salt, the full-block token prefix), so a
+     hit can replay the whole list in one dict lookup.
+ 
+-    A MISS hashes the already-materialized token tuple directly with the
+-    native hash function and parent/extra-key ABI. Eligibility below proves
+-    that extra keys are absent. No per-block memo bookkeeping is needed;
+-    the chain entry is still recorded for a repeat of this exact prompt.
++    A MISS hashes list tokens in their native tuple format and GR ndarray
++    tokens in a versioned little-endian int64 byte format. Incremental array
++    hashing uses the same format in hash_block_tokens_memo. Eligibility below
++    proves that extra keys are absent. The completed chain is recorded for a
++    repeat of this exact prompt, without per-block memo bookkeeping.
+ 
+     Fast-path eligibility is conservative: any incremental call
+     (``block_hashes`` non-empty), mm_features, lora_request, a non-``None``
+@@ -1009,10 +1031,10 @@ def _apply_block_hash_chain_memo_patch(kv_cache_utils) -> None:
+             import numpy as np
+ 
+             prefix = request.all_token_ids[: num_full_blocks * block_size]
+-            # Array memo keys stay compact; cold hashing materializes Python
+-            # integers one block at a time to preserve native cache identity.
++            # Array keys and cold block hashes use canonical int64 bytes;
++            # no Python token integers are materialized.
+             array_tokens = isinstance(prefix, np.ndarray)
+-            tokens = prefix if array_tokens else tuple(prefix)
++            tokens = prefix.astype("<i8", copy=False) if array_tokens else tuple(prefix)
+             key = (caching_hash_fn, block_size, tokens.tobytes() if array_tokens else tokens)
+             hit = chain_memo.get(key)
+             if hit is not None:
+@@ -1021,22 +1043,19 @@ def _apply_block_hash_chain_memo_patch(kv_cache_utils) -> None:
+             _CHAIN_FALLBACK_ACTIVE = True
+             try:
+                 # Eligibility above proves every block has no extra keys.
+-                # Reuse the immutable full-block tuple already built for the
+-                # memo key, preserving the exact native hash input and chain.
++                # List tokens retain the native encoding. GR arrays hash
++                # block bytes directly, without Python integer conversion.
+                 result = []
+                 parent_hash = None
+                 for start in range(0, len(tokens), block_size):
+-                    parent_hash = kv_cache_utils.BlockHash(
+-                        caching_hash_fn(
+-                            (
+-                                parent_hash or kv_cache_utils.NONE_HASH,
+-                                tuple(map(int, tokens[start : start + block_size]))
+-                                if array_tokens
+-                                else tokens[start : start + block_size],
+-                                None,
+-                            )
+-                        )
++                    block = tokens[start : start + block_size]
++                    parent = parent_hash or kv_cache_utils.NONE_HASH
++                    hash_input = (
++                        (parent, _NUMPY_BLOCK_HASH_DOMAIN, block.tobytes(), None)
++                        if array_tokens
++                        else (parent, block, None)
+                     )
++                    parent_hash = kv_cache_utils.BlockHash(caching_hash_fn(hash_input))
+                     result.append(parent_hash)
+             finally:
+                 _CHAIN_FALLBACK_ACTIVE = False

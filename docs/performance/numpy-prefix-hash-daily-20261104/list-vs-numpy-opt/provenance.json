@@ -1,0 +1,20 @@
+{
+  "commits": {
+    "A": "d2b91452fb8144f3e3cf4cbf9127df1b9ecda132",
+    "B": "ecccac6dab44dbbf38397b1c757aa9b7b6c7ed60",
+    "N": "ecccac6dab44dbbf38397b1c757aa9b7b6c7ed60"
+  },
+  "N_patch": "hash-only.patch",
+  "patch_sha256": "bacee4a4ed86d0f63cc7224d4f801a496ec908d049c234da5500e03d5c819be8",
+  "dashboard_commit": "1c322fd629f4269a050fccc884214944181286d2",
+  "daily_script_sha256": "f607d9c0feec9490ff704288f5f53be7973b5fbe2f56c637733f1576e41acc01",
+  "order": [
+    "A1",
+    "B1",
+    "N1",
+    "N2",
+    "B2",
+    "A2"
+  ],
+  "scope": "Unmodified daily CLI; real RecIF data; prefix cache enabled; canonical miss only. No prompt list reuse patch; N differs from B only by hash-only.patch."
+}

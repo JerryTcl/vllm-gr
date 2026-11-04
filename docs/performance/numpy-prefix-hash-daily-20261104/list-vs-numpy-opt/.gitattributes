@@ -1,0 +1,2 @@
+# Preserve the measured patch verbatim, including blank context lines.
+hash-only.patch -whitespace
