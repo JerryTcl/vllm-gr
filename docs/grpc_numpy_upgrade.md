@@ -52,6 +52,14 @@ version is 2; frontend, Core and Workers must restart with the same revision.
 The GR batch contract requires nonempty contiguous nonnegative int64 arrays;
 `None` and embedding-only prompts are rejected.
 
+In vLLM 0.30, V2 can flush staged token contents through a native UVA buffer
+instead of `async_tensor_h2d`. `NumpyStagedContents` implements `__array__`
+so the native NumPy assignment materializes the chunks once. Falling back to
+per-token `__getitem__` would concatenate every chunk for every token in a
+multi-request Prefill. Both transfer paths retain native write ordering and
+buffer ownership; read-only token inputs remain supported. Regression tests
+cover the UVA assignment, buffer reuse, and array dtype/copy semantics.
+
 ## Usage and tests
 
 Install `pip install -e '.[grpc]'`, then use existing GR settings:

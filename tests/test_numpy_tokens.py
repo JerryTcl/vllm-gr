@@ -197,8 +197,24 @@ def test_worker_detaches_arrays_without_python_token_lists():
     np.testing.assert_array_equal(prompt, [1, 2, 3])
 
 
+def _cpu_uva_pool(monkeypatch):
+    from vllm.v1.worker.gpu import buffer_utils
+
+    def buffer(size, dtype):
+        cpu = torch.zeros(size, dtype=dtype)
+        return SimpleNamespace(cpu=cpu, np=cpu.numpy(), uva=lambda n: cpu[:n])
+
+    # Exercise the native pool's NumPy assignment and growth without a device.
+    monkeypatch.setattr(buffer_utils, "is_uva_available", lambda: True)
+    monkeypatch.setattr(buffer_utils, "UvaBuffer", buffer)
+    return buffer_utils.UvaBufferPool(1, dtype=torch.int32, max_concurrency=2)
+
+
 @pytest.mark.parametrize("array_backed", [False, True])
-def test_native_v2_staging_batches_arrays_and_keeps_kernel_write_order(monkeypatch, array_backed):
+@pytest.mark.parametrize("uva_contents", [False, True])
+def test_native_v2_staging_batches_arrays_and_keeps_kernel_write_order(
+    monkeypatch, array_backed, uva_contents
+):
     from vllm.v1.worker.gpu import buffer_utils
 
     install_numpy_staging()
@@ -211,7 +227,7 @@ def test_native_v2_staging_batches_arrays_and_keeps_kernel_write_order(monkeypat
     staged._staged_write_cu_lens = []
     pool = SimpleNamespace(copy_to_uva=lambda values: torch.tensor(values, dtype=torch.int32))
     staged.write_indices = staged.write_starts = staged.write_cu_lens = pool
-    staged.write_contents = None
+    staged.write_contents = _cpu_uva_pool(monkeypatch) if uva_contents else None
 
     class Kernel:
         def __getitem__(self, grid):
@@ -239,6 +255,56 @@ def test_native_v2_staging_batches_arrays_and_keeps_kernel_write_order(monkeypat
     np.testing.assert_array_equal(
         array_h2d(np.array([7, 8], dtype=np.int64), torch.int32, "cpu").numpy(), [7, 8]
     )
+
+
+@pytest.mark.parametrize("batch", [1, 2, 4])
+@pytest.mark.parametrize("readonly", [False, True])
+def test_native_v2_uva_contents_use_one_bulk_conversion(monkeypatch, batch, readonly):
+    pool = _cpu_uva_pool(monkeypatch)
+    contents = NumpyStagedContents(np.int32)
+    original_array = contents.array
+    calls = []
+
+    def observed_array():
+        calls.append(len(contents))
+        return original_array()
+
+    monkeypatch.setattr(contents, "array", observed_array)
+    for iteration in range(3):
+        chunks = []
+        for member in range(batch):
+            source = np.arange(1024, dtype=np.int32) + (iteration * batch + member) * 1024
+            if readonly:
+                source = np.frombuffer(source.tobytes(), dtype=source.dtype)
+            chunks.append(source)
+            contents.extend(source)
+        calls.clear()
+        output = pool.copy_to_uva(contents)
+        np.testing.assert_array_equal(output.numpy(), np.concatenate(chunks))
+        assert calls == [batch * 1024]
+        assert all(chunk.flags.writeable != readonly for chunk in chunks)
+        contents.clear()
+
+
+@pytest.mark.parametrize("chunks", [0, 1, 4])
+@pytest.mark.parametrize("dtype", [np.int32, np.int64])
+@pytest.mark.parametrize("copy", [None, False, True])
+def test_staged_contents_array_protocol_dtype_and_copy(chunks, dtype, copy):
+    source = np.arange(chunks * 3, dtype=np.int32)
+    contents = NumpyStagedContents(source.dtype)
+    for index in range(chunks):
+        contents.extend(source[index * 3 : (index + 1) * 3])
+    if copy is False and (chunks != 1 or dtype != source.dtype):
+        with pytest.raises(ValueError, match="copy"):
+            contents.__array__(dtype=dtype, copy=copy)
+        return
+    # Call the protocol directly so copy=False is also tested on NumPy 1.x,
+    # whose np.array does not forward the copy argument to __array__.
+    result = contents.__array__(dtype=dtype, copy=copy)
+    np.testing.assert_array_equal(result, source)
+    assert result.dtype == dtype
+    if chunks == 1 and dtype == source.dtype:
+        assert np.shares_memory(result, source) == (copy is not True)
 
 
 @pytest.mark.parametrize("readonly", [False, True])

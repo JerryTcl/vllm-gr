@@ -39,6 +39,22 @@ class NumpyStagedContents:
             return self.chunks[0]
         return np.concatenate(self.chunks)
 
+    def __array__(self, dtype: Any = None, copy: bool | None = None) -> npt.NDArray[Any]:
+        """Materialize once for native UVA NumPy assignment.
+
+        Without this protocol, assignment visits __getitem__ for every token
+        and concatenates all chunks on every visit. Keep copy optional for
+        NumPy 1.x callers while honoring the NumPy 2.x no-copy contract.
+        """
+        if copy is False and len(self.chunks) != 1:
+            raise ValueError("Cannot avoid a copy when combining staged token chunks")
+        values = self.array()
+        if dtype is not None and np.dtype(dtype) != values.dtype:
+            if copy is False:
+                raise ValueError("Cannot avoid a copy when converting staged token dtype")
+            return values.astype(dtype)
+        return values.copy() if copy else values
+
     def __getitem__(self, index: Any) -> Any:
         return self.array()[index]
 
