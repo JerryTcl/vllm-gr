@@ -1,84 +1,129 @@
-name: Caspi cache inventory (read only)
+name: Caspi venv inventory (read only)
 on:
   workflow_dispatch:
 permissions: {}
 jobs:
   inventory:
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
-      - name: Verify runner and inspect cache filesystem
+      - name: Verify runner and measure every venv
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           export LC_ALL=C
           root=/data/actions/cache
-          if [[ "${RUNNER_NAME:-}" != caspi || "$(hostname -s)" != caspi ]]; then
-            printf 'Runner identity mismatch: runner=%s hostname=%s\n' "${RUNNER_NAME:-unset}" "$(hostname -s)"
-            exit 1
-          fi
-          printf 'Runner identity verified: %s; job=%s; run=%s\n' "$RUNNER_NAME" "${GITHUB_JOB:-unset}" "${GITHUB_RUN_ID:-unset}"
-          if [[ ! -d "$root" ]]; then
-            printf 'MISSING_OR_INACCESSIBLE cache root: %s\n' "$root"
-            exit 1
-          fi
-          canonical_root=$(timeout 10s realpath -e -- "$root") || { echo "root realpath failed or timed out"; exit 1; }
-          printf 'Cache root resolved: %s\n' "$canonical_root"
-          inventory_issue=0
-          printf '\n## Filesystem usage\n'
-          timeout 10s df -hPT -- "$root"; rc=$?; printf 'df_status=%s\n' "$rc"; ((rc == 0)) || inventory_issue=1
-          timeout 10s df -PT -B1 -- "$root"; rc=$?; printf 'df_bytes_status=%s\n' "$rc"; ((rc == 0)) || inventory_issue=1
-          printf '\n## Mount\n'
-          if command -v findmnt >/dev/null 2>&1; then
-            timeout 10s findmnt -T "$root" -o TARGET,SOURCE,FSTYPE; rc=$?; printf 'findmnt_status=%s\n' "$rc"; ((rc == 0)) || inventory_issue=1
-          else
-            printf 'findmnt unavailable; mount details missing\n'; inventory_issue=1
-          fi
+          host=$(timeout 10s hostname -s); rc=$?
+          if ((rc != 0)) || [[ "${RUNNER_NAME:-}" != caspi || "$host" != caspi ]]; then printf 'RUNNER_MISMATCH runner=%s host=%s status=%s\n' "${RUNNER_NAME:-unset}" "$host" "$rc"; exit 1; fi
+          printf 'RUNNER_VERIFIED name=%s hostname=%s run=%s time=%s\n' "$RUNNER_NAME" "$host" "${GITHUB_RUN_ID:-unset}" "$(date -u +%FT%TZ)"
+          canonical=$(timeout 10s realpath -e -- "$root"); rc=$?
+          if ((rc != 0)) || [[ ! -d "$root" ]]; then echo CACHE_ROOT_INACCESSIBLE; exit 1; fi
+          printf 'CACHE_ROOT path=%s canonical=%s\n' "$root" "$canonical"
+          incomplete=0
+          timeout 10s df -PT -B1 -- "$root"; rc=$?; printf 'DF_STATUS %s\n' "$rc"; ((rc == 0)) || incomplete=1
+          timeout 10s df -Pi -- "$root"; rc=$?; printf 'INODE_STATUS %s\n' "$rc"; ((rc == 0)) || incomplete=1
+          timeout 10s findmnt -T "$root" -o TARGET,SOURCE,FSTYPE; rc=$?; printf 'MOUNT_STATUS %s\n' "$rc"; ((rc == 0)) || incomplete=1
           reader=()
-          if [[ "$(id -u)" == 0 ]]; then
-            printf 'inspection_user=root\n'
-          elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-            reader=(sudo -n)
-            printf 'inspection_user=noninteractive-sudo\n'
-          else
-            printf 'inspection_user=runner; inaccessible paths will be reported\n'
-          fi
-          printf '\n## Root and immediate child allocated sizes in bytes (same filesystem)\n'
-          timeout 240s nice -n 19 "${reader[@]}" du -x -B1 -d 1 -- "$root"
-          rc=$?; printf 'du_root_status=%s (124=timeout; nonzero may indicate permission errors)\n' "$rc"; ((rc == 0)) || inventory_issue=1
-          printf '\n## Recognized cache paths, type and modification time; max depth 3\n'
-          timeout 90s nice -n 19 "${reader[@]}" find -P "$root" -xdev -maxdepth 3 \
-            \( \( -name .venv -o -name 'pre-commit-*' \) \( -type d -o -type l \) \
-            -printf '%y %T@ %p -> %l\n' -prune \) -o \
-            \( -name 'gr-*' \( -type d -o -type l \) -printf '%y %T@ %p -> %l\n' \)
-          rc=$?; printf 'find_layout_status=%s (124=timeout; nonzero may indicate permission errors)\n' "$rc"; ((rc == 0)) || inventory_issue=1
-          printf '\n## Venv allocated sizes in bytes (max 24 paths, same filesystem)\n'
-          # Limit both time and breadth; only follow links resolving within the cache root.
-          timeout 360s bash -c '
+          if [[ $(id -u) == 0 ]]; then echo 'READER root'; elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then reader=(sudo -n); echo 'READER sudo'; else echo 'READER runner'; fi
+          echo BEGIN_ROOT_SIZES_BYTES
+          timeout 240s nice -n 19 "${reader[@]}" du -x -B1 -d 1 -- "$root"; rc=$?
+          printf 'ROOT_DU_STATUS %s\n' "$rc"; ((rc == 0)) || incomplete=1
+          echo BEGIN_VENV_INVENTORY
+          timeout 1000s bash -c '
+            set +e
             set -uo pipefail
-            root=$1; canonical=$2; shift 2
-            prefix=("$@")
+            root=$1; canonical=$2; shift 2; prefix=("$@")
             "${prefix[@]}" find -P "$root" -xdev -maxdepth 3 \( -name "pre-commit-*" -type d -prune \) -o \( -name .venv \( -type d -o -type l \) -print0 -prune \) | {
-              count=0
-              incomplete=0
+              count=0; failed=0
               while IFS= read -r -d "" path; do
                 count=$((count + 1))
-                if ((count > 24)); then echo "TRUNCATED: more than 24 .venv paths"; incomplete=1; break; fi
-                resolved=$(timeout 10s "${prefix[@]}" realpath -e -- "$path" 2>/dev/null) || { printf "UNREADABLE_OR_BROKEN %s\n" "$path"; incomplete=1; continue; }
-                case "$resolved" in
-                  "$canonical"/*) ;;
-                  *) printf "SKIP_OUTSIDE_CACHE %s -> %s\n" "$path" "$resolved"; incomplete=1; continue ;;
-                esac
-                printf "venv=%s resolved=%s\n" "$path" "$resolved"
-                timeout 45s nice -n 19 "${prefix[@]}" du -s -B1 -x -- "$resolved"
-                result=$?; printf "venv_du_status=%s\n" "$result"
-                ((result == 0)) || incomplete=1
+                resolved=$(timeout 10s "${prefix[@]}" realpath -e -- "$path"); rc=$?
+                if ((rc != 0)); then printf "VENV_UNREADABLE path=%q status=%s\n" "$path" "$rc"; failed=1; continue; fi
+                case "$resolved" in "$canonical"/*) ;; *) printf "VENV_OUTSIDE path=%q resolved=%q\n" "$path" "$resolved"; failed=1; continue;; esac
+                printf "VENV_BEGIN path=%q resolved=%q\n" "$path" "$resolved"
+                timeout 10s "${prefix[@]}" stat -c "VENV_METADATA inode=%i uid=%u gid=%g mode=%a atime=%X mtime=%Y ctime=%Z" -- "$resolved"; rc=$?
+                printf "VENV_STAT_STATUS %s\n" "$rc"; ((rc == 0)) || failed=1
+                parent=${path%/.venv}
+                timeout 10s "${prefix[@]}" stat -c "KEY_METADATA inode=%i uid=%u gid=%g mode=%a atime=%X mtime=%Y ctime=%Z" -- "$parent"; rc=$?
+                printf "KEY_STAT_STATUS %s\n" "$rc"; ((rc == 0)) || failed=1
+                timeout 45s nice -n 19 "${prefix[@]}" du -s -B1 -x -- "$resolved"; rc=$?
+                printf "VENV_DU_STATUS %s\n" "$rc"; ((rc == 0)) || failed=1
+                echo VENV_END
               done
-              if ((count == 0)); then echo "NO_VENV_FOUND: size measurement incomplete"; incomplete=1; fi
-              printf "venv_paths_examined=%s\n" "$count"
-              exit "$incomplete"
+              printf "VENV_COUNT %s\n" "$count"
+              if ((count == 0)); then echo NO_VENV_FOUND; failed=1; fi
+              exit "$failed"
             }
-          ' bash "$root" "$canonical_root" "${reader[@]}"
-          rc=$?; printf 'venv_inventory_status=%s (124=timeout; inspect permission errors above)\n' "$rc"; ((rc == 0)) || inventory_issue=1
-          printf '\nRead-only inventory finished; partial sections are explicitly marked.\n'
-          exit "$inventory_issue"
+          ' bash "$root" "$canonical" "${reader[@]}"; rc=$?
+          printf 'VENV_INVENTORY_STATUS %s\n' "$rc"; ((rc == 0)) || incomplete=1
+          printf 'INVENTORY_RESULT incomplete=%s\n' "$incomplete"
+          exit "$incomplete"
+      - name: Inspect active cache references
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          if [[ "${RUNNER_NAME:-}" != caspi || "$(timeout 10s hostname -s)" != caspi ]]; then echo RUNNER_MISMATCH; exit 1; fi
+          timeout 180s python3 - <<'PY'
+          import collections, json, os, pathlib
+          root = '/data/actions/cache/'
+          counts = collections.Counter()
+          hits = set()
+          def record(pid, uid, source, path):
+              if path.endswith(' (deleted)'):
+                  path = path[:-10]
+              if not path.startswith(root):
+                  return
+              key = path[len(root):].split('/', 1)[0]
+              if key.startswith(('venv-', 'gr-runtime-v1-')):
+                  hits.add((pid, uid, key, source))
+          for proc in pathlib.Path('/proc').iterdir():
+              if not proc.name.isdecimal():
+                  continue
+              pid = int(proc.name)
+              try:
+                  uid = proc.stat().st_uid
+              except FileNotFoundError:
+                  counts['vanished'] += 1; continue
+              except OSError:
+                  counts['unreadable_proc'] += 1; continue
+              counts['processes_seen'] += 1
+              for name in ('cwd', 'exe'):
+                  try:
+                      record(pid, uid, name, os.readlink(proc / name))
+                  except FileNotFoundError:
+                      counts['vanished_or_missing'] += 1
+                  except OSError:
+                      counts['unreadable_links'] += 1
+              try:
+                  entries = list((proc / 'fd').iterdir())
+              except FileNotFoundError:
+                  counts['vanished_or_missing'] += 1; entries = []
+              except OSError:
+                  counts['unreadable_fd_dirs'] += 1; entries = []
+              for entry in entries:
+                  try:
+                      record(pid, uid, 'fd', os.readlink(entry))
+                  except FileNotFoundError:
+                      counts['vanished_or_missing'] += 1
+                  except OSError:
+                      counts['unreadable_fds'] += 1
+              try:
+                  with (proc / 'maps').open('r', encoding='utf-8', errors='replace') as stream:
+                      for line in stream:
+                          parts = line.rstrip('\n').split(None, 5)
+                          if len(parts) == 6:
+                              record(pid, uid, 'maps', parts[5])
+              except FileNotFoundError:
+                  counts['vanished_or_missing'] += 1
+              except OSError:
+                  counts['unreadable_maps'] += 1
+          for pid, uid, key, source in sorted(hits):
+              print('PROC_CACHE_REFERENCE', json.dumps({'pid': pid, 'uid': uid, 'cache_key': key, 'source': source}, sort_keys=True))
+          print('PROC_SCAN_COUNTS', json.dumps(counts, sort_keys=True))
+          print('PROC_SCAN_INTERPRETATION unknown_not_proof_of_no_consumers; permission errors, races, symlink paths and non-file references may hide consumers')
+          PY
+          rc=$?; printf 'PROC_SCAN_STATUS %s\n' "$rc"
+          if ((rc != 0)); then echo PROC_SCAN_INCOMPLETE; exit "$rc"; fi
