@@ -1,0 +1,812 @@
+{
+  "commit": "c281cadc8576d28fc3ccf2000c22a250e3bac216",
+  "base": "447fb736091d6f70681bd17b9f321423c33c8cfd",
+  "packages": {
+    "vllm": "0.30.0",
+    "torch": "2.13.0",
+    "numpy": "2.2.6",
+    "triton": "3.7.1"
+  },
+  "input_sha256": "0544de053857f4b2e7016f0d31539389327c467823f3393d2449d36afaab2276",
+  "workload": "OneRec-1.7B BF16; B=4; beam=128; input=1024 incl. SID begin; 3 SID stages; Prefix Cache off; FULL Prefill/Decode backbones; NVIDIA L20",
+  "protocol": "One engine; parent/fixed/fixed/parent; 10 warmups then 3 profiled requests per block. Only __array__ toggled.",
+  "output_exact": true,
+  "graph_validation": "PASS",
+  "rows": [
+    {
+      "variant": "parent",
+      "block": 0,
+      "request": 0,
+      "trace": "00_before.pt.trace.json.gz",
+      "array_calls": 4097,
+      "inner_copy_cpu_ms": 25.474659,
+      "spans": {
+        "request": {
+          "ts": 3181635197064.882,
+          "dur": 232813.147
+        },
+        "uva": {
+          "ts": 3181635209666.852,
+          "dur": 25507.284
+        },
+        "add_requests": {
+          "ts": 3181635208598.704,
+          "dur": 27673.285
+        },
+        "apply_staged_writes": {
+          "ts": 3181635209042.291,
+          "dur": 26605.62
+        },
+        "all_token_ids": {
+          "ts": 3181635209566.906,
+          "dur": 25731.14
+        },
+        "prepare_inputs": {
+          "ts": 3181635237171.889,
+          "dur": 1406.945
+        },
+        "prepare_attn": {
+          "ts": 3181635238608.17,
+          "dur": 352.798
+        },
+        "prefill_launch": {
+          "ts": 3181635239418.892,
+          "dur": 1199.232
+        },
+        "gpu_prefill": [
+          {
+            "ts": 3181635239535.665,
+            "dur": 120753.216
+          }
+        ],
+        "gpu_decode": [
+          {
+            "ts": 3181635360883.953,
+            "dur": 17024.997
+          },
+          {
+            "ts": 3181635379906.044,
+            "dur": 17057.83
+          }
+        ]
+      }
+    },
+    {
+      "variant": "parent",
+      "block": 0,
+      "request": 1,
+      "trace": "00_before.pt.trace.json.gz",
+      "array_calls": 4097,
+      "inner_copy_cpu_ms": 25.726376,
+      "spans": {
+        "request": {
+          "ts": 3181635429904.0,
+          "dur": 227973.422
+        },
+        "uva": {
+          "ts": 3181635437945.598,
+          "dur": 25758.438
+        },
+        "add_requests": {
+          "ts": 3181635436604.441,
+          "dur": 28180.612
+        },
+        "apply_staged_writes": {
+          "ts": 3181635437219.025,
+          "dur": 26961.823
+        },
+        "all_token_ids": {
+          "ts": 3181635437799.536,
+          "dur": 26027.991
+        },
+        "prepare_inputs": {
+          "ts": 3181635465445.44,
+          "dur": 1372.573
+        },
+        "prepare_attn": {
+          "ts": 3181635466846.614,
+          "dur": 351.59
+        },
+        "prefill_launch": {
+          "ts": 3181635467632.214,
+          "dur": 1171.708
+        },
+        "gpu_prefill": [
+          {
+            "ts": 3181635467719.671,
+            "dur": 120569.087
+          }
+        ],
+        "gpu_decode": [
+          {
+            "ts": 3181635588893.111,
+            "dur": 17021.573
+          },
+          {
+            "ts": 3181635607914.146,
+            "dur": 17061.477
+          }
+        ]
+      }
+    },
+    {
+      "variant": "parent",
+      "block": 0,
+      "request": 2,
+      "trace": "00_before.pt.trace.json.gz",
+      "array_calls": 4097,
+      "inner_copy_cpu_ms": 25.558735,
+      "spans": {
+        "request": {
+          "ts": 3181635657902.387,
+          "dur": 227832.669
+        },
+        "uva": {
+          "ts": 3181635665907.262,
+          "dur": 25589.58
+        },
+        "add_requests": {
+          "ts": 3181635664595.28,
+          "dur": 27967.27
+        },
+        "apply_staged_writes": {
+          "ts": 3181635665199.329,
+          "dur": 26768.053
+        },
+        "all_token_ids": {
+          "ts": 3181635665775.797,
+          "dur": 25838.691
+        },
+        "prepare_inputs": {
+          "ts": 3181635693220.766,
+          "dur": 1370.011
+        },
+        "prepare_attn": {
+          "ts": 3181635694619.34,
+          "dur": 348.972
+        },
+        "prefill_launch": {
+          "ts": 3181635695398.526,
+          "dur": 1166.457
+        },
+        "gpu_prefill": [
+          {
+            "ts": 3181635695486.364,
+            "dur": 120756.735
+          }
+        ],
+        "gpu_decode": [
+          {
+            "ts": 3181635816846.748,
+            "dur": 17082.214
+          },
+          {
+            "ts": 3181635835931.112,
+            "dur": 17066.181
+          }
+        ]
+      }
+    },
+    {
+      "variant": "fixed",
+      "block": 1,
+      "request": 0,
+      "trace": "01_after.pt.trace.json.gz",
+      "array_calls": 1,
+      "inner_copy_cpu_ms": 0.065671,
+      "spans": {
+        "request": {
+          "ts": 3181638959509.8,
+          "dur": 203901.801
+        },
+        "uva": {
+          "ts": 3181638968128.588,
+          "dur": 97.743
+        },
+        "add_requests": {
+          "ts": 3181638966749.649,
+          "dur": 2982.827
+        },
+        "apply_staged_writes": {
+          "ts": 3181638967360.771,
+          "dur": 1488.56
+        },
+        "all_token_ids": {
+          "ts": 3181638967994.749,
+          "dur": 384.596
+        },
+        "prepare_inputs": {
+          "ts": 3181638970611.739,
+          "dur": 1374.648
+        },
+        "prepare_attn": {
+          "ts": 3181638972015.012,
+          "dur": 332.645
+        },
+        "prefill_launch": {
+          "ts": 3181638972768.431,
+          "dur": 1145.216
+        },
+        "gpu_prefill": [
+          {
+            "ts": 3181638972868.882,
+            "dur": 120636.838
+          }
+        ],
+        "gpu_decode": [
+          {
+            "ts": 3181639094110.041,
+            "dur": 17043.142
+          },
+          {
+            "ts": 3181639113146.757,
+            "dur": 17081.671
+          }
+        ]
+      }
+    },
+    {
+      "variant": "fixed",
+      "block": 1,
+      "request": 1,
+      "trace": "01_after.pt.trace.json.gz",
+      "array_calls": 1,
+      "inner_copy_cpu_ms": 0.063315,
+      "spans": {
+        "request": {
+          "ts": 3181639163436.532,
+          "dur": 203676.551
+        },
+        "uva": {
+          "ts": 3181639171360.492,
+          "dur": 94.044
+        },
+        "add_requests": {
+          "ts": 3181639170063.612,
+          "dur": 2889.178
+        },
+        "apply_staged_writes": {
+          "ts": 3181639170640.319,
+          "dur": 1437.847
+        },
+        "all_token_ids": {
+          "ts": 3181639171228.672,
+          "dur": 373.888
+        },
+        "prepare_inputs": {
+          "ts": 3181639173808.466,
+          "dur": 1355.103
+        },
+        "prepare_attn": {
+          "ts": 3181639175192.33,
+          "dur": 328.235
+        },
+        "prefill_launch": {
+          "ts": 3181639175948.715,
+          "dur": 1125.102
+        },
+        "gpu_prefill": [
+          {
+            "ts": 3181639176032.481,
+            "dur": 121416.165
+          }
+        ],
+        "gpu_decode": [
+          {
+            "ts": 3181639298055.591,
+            "dur": 17166.41
+          },
+          {
+            "ts": 3181639317232.888,
+            "dur": 17175.979
+          }
+        ]
+      }
+    },
+    {
+      "variant": "fixed",
+      "block": 1,
+      "request": 2,
+      "trace": "01_after.pt.trace.json.gz",
+      "array_calls": 1,
+      "inner_copy_cpu_ms": 0.061569,
+      "spans": {
+        "request": {
+          "ts": 3181639367137.81,
+          "dur": 203861.179
+        },
+        "uva": {
+          "ts": 3181639375276.421,
+          "dur": 92.059
+        },
+        "add_requests": {
+          "ts": 3181639373979.081,
+          "dur": 2874.099
+        },
+        "apply_staged_writes": {
+          "ts": 3181639374554.588,
+          "dur": 1438.529
+        },
+        "all_token_ids": {
+          "ts": 3181639375144.065,
+          "dur": 372.999
+        },
+        "prepare_inputs": {
+          "ts": 3181639377720.218,
+          "dur": 1359.501
+        },
+        "prepare_attn": {
+          "ts": 3181639379108.529,
+          "dur": 330.942
+        },
+        "prefill_launch": {
+          "ts": 3181639379860.515,
+          "dur": 1138.316
+        },
+        "gpu_prefill": [
+          {
+            "ts": 3181639379955.458,
+            "dur": 121551.685
+          }
+        ],
+        "gpu_decode": [
+          {
+            "ts": 3181639502111.272,
+            "dur": 17079.147
+          },
+          {
+            "ts": 3181639521191.769,
+            "dur": 17064.331
+          }
+        ]
+      }
+    },
+    {
+      "variant": "fixed",
+      "block": 2,
+      "request": 0,
+      "trace": "02_after.pt.trace.json.gz",
+      "array_calls": 1,
+      "inner_copy_cpu_ms": 0.064988,
+      "spans": {
+        "request": {
+          "ts": 3181642628855.175,
+          "dur": 203606.616
+        },
+        "uva": {
+          "ts": 3181642637354.351,
+          "dur": 97.151
+        },
+        "add_requests": {
+          "ts": 3181642636005.186,
+          "dur": 2960.847
+        },
+        "apply_staged_writes": {
+          "ts": 3181642636596.064,
+          "dur": 1486.819
+        },
+        "all_token_ids": {
+          "ts": 3181642637220.052,
+          "dur": 380.994
+        },
+        "prepare_inputs": {
+          "ts": 3181642639839.239,
+          "dur": 1372.889
+        },
+        "prepare_attn": {
+          "ts": 3181642641241.701,
+          "dur": 330.634
+        },
+        "prefill_launch": {
+          "ts": 3181642642002.516,
+          "dur": 1147.041
+        },
+        "gpu_prefill": [
+          {
+            "ts": 3181642642091.384,
+            "dur": 120637.197
+          }
+        ],
+        "gpu_decode": [
+          {
+            "ts": 3181642763332.998,
+            "dur": 17045.58
+          },
+          {
+            "ts": 3181642782376.569,
+            "dur": 17078.988
+          }
+        ]
+      }
+    },
+    {
+      "variant": "fixed",
+      "block": 2,
+      "request": 1,
+      "trace": "02_after.pt.trace.json.gz",
+      "array_calls": 1,
+      "inner_copy_cpu_ms": 0.066277,
+      "spans": {
+        "request": {
+          "ts": 3181642832486.342,
+          "dur": 203243.501
+        },
+        "uva": {
+          "ts": 3181642840438.067,
+          "dur": 96.278
+        },
+        "add_requests": {
+          "ts": 3181642839136.971,
+          "dur": 2901.283
+        },
+        "apply_staged_writes": {
+          "ts": 3181642839713.354,
+          "dur": 1448.482
+        },
+        "all_token_ids": {
+          "ts": 3181642840307.051,
+          "dur": 377.126
+        },
+        "prepare_inputs": {
+          "ts": 3181642842893.995,
+          "dur": 1365.926
+        },
+        "prepare_attn": {
+          "ts": 3181642844289.156,
+          "dur": 330.956
+        },
+        "prefill_launch": {
+          "ts": 3181642845048.776,
+          "dur": 1131.834
+        },
+        "gpu_prefill": [
+          {
+            "ts": 3181642845134.602,
+            "dur": 120649.005
+          }
+        ],
+        "gpu_decode": [
+          {
+            "ts": 3181642966387.8,
+            "dur": 17047.916
+          },
+          {
+            "ts": 3181642985435.915,
+            "dur": 17080.044
+          }
+        ]
+      }
+    },
+    {
+      "variant": "fixed",
+      "block": 2,
+      "request": 2,
+      "trace": "02_after.pt.trace.json.gz",
+      "array_calls": 1,
+      "inner_copy_cpu_ms": 0.063029,
+      "spans": {
+        "request": {
+          "ts": 3181643035754.484,
+          "dur": 202741.102
+        },
+        "uva": {
+          "ts": 3181643043664.766,
+          "dur": 92.476
+        },
+        "add_requests": {
+          "ts": 3181643042362.507,
+          "dur": 2895.419
+        },
+        "apply_staged_writes": {
+          "ts": 3181643042951.917,
+          "dur": 1433.293
+        },
+        "all_token_ids": {
+          "ts": 3181643043533.303,
+          "dur": 372.512
+        },
+        "prepare_inputs": {
+          "ts": 3181643046126.734,
+          "dur": 1382.916
+        },
+        "prepare_attn": {
+          "ts": 3181643047538.908,
+          "dur": 330.851
+        },
+        "prefill_launch": {
+          "ts": 3181643048309.366,
+          "dur": 1148.808
+        },
+        "gpu_prefill": [
+          {
+            "ts": 3181643048396.86,
+            "dur": 120631.47
+          }
+        ],
+        "gpu_decode": [
+          {
+            "ts": 3181643169625.483,
+            "dur": 17048.462
+          },
+          {
+            "ts": 3181643188665.632,
+            "dur": 17085.491
+          }
+        ]
+      }
+    },
+    {
+      "variant": "parent",
+      "block": 3,
+      "request": 0,
+      "trace": "03_before.pt.trace.json.gz",
+      "array_calls": 4097,
+      "inner_copy_cpu_ms": 26.484933,
+      "spans": {
+        "request": {
+          "ts": 3181646568254.45,
+          "dur": 232275.388
+        },
+        "uva": {
+          "ts": 3181646577629.064,
+          "dur": 26558.795
+        },
+        "add_requests": {
+          "ts": 3181646576200.774,
+          "dur": 29253.732
+        },
+        "apply_staged_writes": {
+          "ts": 3181646576814.342,
+          "dur": 28012.821
+        },
+        "all_token_ids": {
+          "ts": 3181646577493.106,
+          "dur": 26875.884
+        },
+        "prepare_inputs": {
+          "ts": 3181646606458.426,
+          "dur": 1540.461
+        },
+        "prepare_attn": {
+          "ts": 3181646608028.586,
+          "dur": 347.598
+        },
+        "prefill_launch": {
+          "ts": 3181646608916.173,
+          "dur": 1192.795
+        },
+        "gpu_prefill": [
+          {
+            "ts": 3181646609046.744,
+            "dur": 121292.808
+          }
+        ],
+        "gpu_decode": [
+          {
+            "ts": 3181646730935.137,
+            "dur": 17071.279
+          },
+          {
+            "ts": 3181646750005.143,
+            "dur": 17138.256
+          }
+        ]
+      }
+    },
+    {
+      "variant": "parent",
+      "block": 3,
+      "request": 1,
+      "trace": "03_before.pt.trace.json.gz",
+      "array_calls": 4097,
+      "inner_copy_cpu_ms": 25.594946,
+      "spans": {
+        "request": {
+          "ts": 3181646800559.984,
+          "dur": 229357.838
+        },
+        "uva": {
+          "ts": 3181646808791.265,
+          "dur": 25623.137
+        },
+        "add_requests": {
+          "ts": 3181646807464.435,
+          "dur": 28011.149
+        },
+        "apply_staged_writes": {
+          "ts": 3181646808077.166,
+          "dur": 26788.814
+        },
+        "all_token_ids": {
+          "ts": 3181646808654.596,
+          "dur": 25874.085
+        },
+        "prepare_inputs": {
+          "ts": 3181646836340.215,
+          "dur": 1368.667
+        },
+        "prepare_attn": {
+          "ts": 3181646837737.529,
+          "dur": 343.762
+        },
+        "prefill_launch": {
+          "ts": 3181646838499.97,
+          "dur": 1131.054
+        },
+        "gpu_prefill": [
+          {
+            "ts": 3181646838584.425,
+            "dur": 121644.553
+          }
+        ],
+        "gpu_decode": [
+          {
+            "ts": 3181646960834.995,
+            "dur": 17171.088
+          },
+          {
+            "ts": 3181646980014.954,
+            "dur": 17205.616
+          }
+        ]
+      }
+    },
+    {
+      "variant": "parent",
+      "block": 3,
+      "request": 2,
+      "trace": "03_before.pt.trace.json.gz",
+      "array_calls": 4097,
+      "inner_copy_cpu_ms": 25.438791,
+      "spans": {
+        "request": {
+          "ts": 3181647029949.261,
+          "dur": 228590.232
+        },
+        "uva": {
+          "ts": 3181647037872.847,
+          "dur": 25468.642
+        },
+        "add_requests": {
+          "ts": 3181647036548.591,
+          "dur": 27878.647
+        },
+        "apply_staged_writes": {
+          "ts": 3181647037157.236,
+          "dur": 26651.396
+        },
+        "all_token_ids": {
+          "ts": 3181647037739.955,
+          "dur": 25719.135
+        },
+        "prepare_inputs": {
+          "ts": 3181647065318.992,
+          "dur": 1406.886
+        },
+        "prepare_attn": {
+          "ts": 3181647066756.046,
+          "dur": 354.063
+        },
+        "prefill_launch": {
+          "ts": 3181647067567.411,
+          "dur": 1204.53
+        },
+        "gpu_prefill": [
+          {
+            "ts": 3181647067669.816,
+            "dur": 120835.559
+          }
+        ],
+        "gpu_decode": [
+          {
+            "ts": 3181647189110.015,
+            "dur": 17045.106
+          },
+          {
+            "ts": 3181647208154.905,
+            "dur": 17161.746
+          }
+        ]
+      }
+    }
+  ],
+  "statistics": {
+    "parent": {
+      "add_requests": {
+        "median_ms": 27.9892095,
+        "min_ms": 27.673285,
+        "max_ms": 29.253732,
+        "n": 6
+      },
+      "apply_staged_writes": {
+        "median_ms": 26.7784335,
+        "min_ms": 26.60562,
+        "max_ms": 28.012821,
+        "n": 6
+      },
+      "all_token_ids": {
+        "median_ms": 25.856388,
+        "min_ms": 25.719134999999998,
+        "max_ms": 26.875884,
+        "n": 6
+      },
+      "uva": {
+        "median_ms": 25.6063585,
+        "min_ms": 25.468642,
+        "max_ms": 26.558795,
+        "n": 6
+      },
+      "prepare_inputs": {
+        "median_ms": 1.3897295,
+        "min_ms": 1.3686669999999999,
+        "max_ms": 1.540461,
+        "n": 6
+      },
+      "prepare_attn": {
+        "median_ms": 0.35028099999999995,
+        "min_ms": 0.343762,
+        "max_ms": 0.35406299999999996,
+        "n": 6
+      }
+    },
+    "fixed": {
+      "add_requests": {
+        "median_ms": 2.898351,
+        "min_ms": 2.874099,
+        "max_ms": 2.9828270000000003,
+        "n": 6
+      },
+      "apply_staged_writes": {
+        "median_ms": 1.4435055,
+        "min_ms": 1.433293,
+        "max_ms": 1.4885599999999999,
+        "n": 6
+      },
+      "all_token_ids": {
+        "median_ms": 0.375507,
+        "min_ms": 0.372512,
+        "max_ms": 0.384596,
+        "n": 6
+      },
+      "uva": {
+        "median_ms": 0.095161,
+        "min_ms": 0.092059,
+        "max_ms": 0.097743,
+        "n": 6
+      },
+      "prepare_inputs": {
+        "median_ms": 1.3694074999999999,
+        "min_ms": 1.3551030000000002,
+        "max_ms": 1.382916,
+        "n": 6
+      },
+      "prepare_attn": {
+        "median_ms": 0.33089650000000004,
+        "min_ms": 0.328235,
+        "max_ms": 0.33264499999999997,
+        "n": 6
+      }
+    }
+  },
+  "representatives": {
+    "parent": {
+      "trace": "00_before.pt.trace.json.gz",
+      "request": 2,
+      "block": 0,
+      "array_calls": 4097
+    },
+    "fixed": {
+      "trace": "01_after.pt.trace.json.gz",
+      "request": 1,
+      "block": 1,
+      "array_calls": 1
+    }
+  },
+  "timing_scope": "Chrome trace CPU slices include profiler/instrumentation overhead. GPU graph ranges are profiler-correlated device spans. Not an unprofiled performance benchmark.",
+  "trace_sha256": {
+    "02_after.pt.trace.json.gz": "605cd08c06611f104ee547ddc680db01b67f3db8d74896909c120e3c47e58ab8",
+    "00_before.pt.trace.json.gz": "cb33c50e39936bda9f832c0846232f00982fe5aa0dfab4ad77076ef3ed3594f8",
+    "03_before.pt.trace.json.gz": "0933999e6060b2a64769cd01d228e4d2ea8951499a8d0f487da59dbca9ae363f",
+    "01_after.pt.trace.json.gz": "256e5bb34b8ed3c0e196b160ff284bc9fd8135c392532bbfc9cf7e07da4d263c"
+  }
+}
