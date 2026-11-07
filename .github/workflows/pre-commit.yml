@@ -1,4 +1,4 @@
-name: Caspi venv inventory (read only)
+name: Caspi candidate venv deep audit (read only)
 on:
   workflow_dispatch:
 permissions: {}
@@ -6,124 +6,444 @@ jobs:
   inventory:
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 25
+    env:
+      VENV_CANDIDATES_JSON: '[{"inode":106586281,"key":"gr-runtime-v1-cuda-Linux-x86_64-py3.11.12-vllm0.30.0-1f3b2e172680e440fc55a1ba0157acc2baf29ab421cad8e9ebdf7c9735e8a630"},{"inode":106127501,"key":"gr-runtime-v1-cuda-Linux-x86_64-py3.11.12-vllm0.30.0-718d3ab2b37e862960a62189369ffc81f851f9fc4eda717222c637ad8cba279c"},{"inode":106914092,"key":"gr-runtime-v1-cuda-Linux-x86_64-py3.11.12-vllm0.30.0-7fc876748fee11e146b97a4001952eaf2aa26e704a0e00b8a96fe46cedcf055f"},{"inode":103112756,"key":"gr-runtime-v1-cuda-Linux-x86_64-py3.11.12-vllm0.30.0-b955e6dea9b6e4e3939287d49b7b76228719ce1fe8e53b6e3c81cd5c9d233eff"},{"inode":105668730,"key":"gr-runtime-v1-cuda-Linux-x86_64-py3.11.12-vllm0.30.0-f5ceab212fd807fc0e2ad55efc88b972119b574eeb2a4f1c9f992d5866d20017"},{"inode":95420478,"key":"venv-Linux-vllm0.14.1-f2c9cb3538ce72a1c8c26fd8b4cfe7926e97c7de1b41e68261b21a212d2e587d"},{"inode":103112745,"key":"venv-Linux-vllm0.22.1-076e05923682b6be3be6b85714aa9b91090e4b76285299dd9bbe450dae1219eb"},{"inode":104021372,"key":"venv-Linux-vllm0.22.1-0f7499a6882adcb4226af16bf92f30de98808aabc9b4cb0d791e649ff4757868"},{"inode":104219885,"key":"venv-Linux-vllm0.22.1-17a2bd269c5f2bded4e378740199c668c8e59a13d6af913164601a72bd55553d"},{"inode":103440482,"key":"venv-Linux-vllm0.22.1-1c18415dbef7f4881dd51a6e78141fbdb4640b6490149ed160dc489a6eb4dfbc"},{"inode":105517916,"key":"venv-Linux-vllm0.22.1-1f1fe1d52d111ff5db528597955379bf4a21bfeb9c195e17659f816aa75be337"},{"inode":103815487,"key":"venv-Linux-vllm0.22.1-237321470d3d13c515179adab087e0d951daf2d52e7052d8c79213058c4516a4"},{"inode":104866250,"key":"venv-Linux-vllm0.22.1-29ed0a599d41faec6d827e4107cdb9b27bbb9739d892951d416717d7aab92940"},{"inode":104668606,"key":"venv-Linux-vllm0.22.1-2e83b4e0af00647b14de248a2eb6f60c601067498c819a7188d56802288ccd3f"},{"inode":105723475,"key":"venv-Linux-vllm0.22.1-3274866aa66b804933b88e100c91d8c38467df7e6a486a5588ba4e8008546074"},{"inode":102718963,"key":"venv-Linux-vllm0.22.1-51c844e8e410c5066d87463cb6932524845570d6fd7ea694306a0492ded66ab3"},{"inode":106044468,"key":"venv-Linux-vllm0.22.1-5ec1c8b502501078df90c689ad06d89292c44030c2e191125d16cee461b7c8c5"},{"inode":102915636,"key":"venv-Linux-vllm0.22.1-6ad889d5522a38f9ba834041df8e223cb20f6a02dae4243c5e87969e8846ed78"},{"inode":104464672,"key":"venv-Linux-vllm0.22.1-6e07e10489122a4c13a34427dd37a9af2a9377eb188a062d307aaf076911b278"},{"inode":105270091,"key":"venv-Linux-vllm0.22.1-73367a855f1821e2d3a05148acdd276c88e161ae1f0d7d602bf3dcabace071f8"},{"inode":102510666,"key":"venv-Linux-vllm0.22.1-8aeed9b485a5c8265cd592bb6680f9302a7244fc3a5f96cfbd40e0f8743ad1a0"},{"inode":105070428,"key":"venv-Linux-vllm0.22.1-c1bd1e20c338d9d860e971f5d13e95d5836acb4c54196bf03a63bc65d812ef87"},{"inode":102718974,"key":"venv-Linux-vllm0.22.1-c2a73adff4fa81d234792a2d195ef2af50ac3fae64f12a9d304af7a4af4248f9"},{"inode":103569041,"key":"venv-Linux-vllm0.22.1-d88fe8467754809e6f3fd79f44605ad6d8413acce69d135256db77f6eab44a8c"},{"inode":106389675,"key":"venv-Linux-vllm0.22.1-dffee8c6e96273d8742ce482f1aeb5a8532c3d9dec26f52798c1b608c3575454"},{"inode":102712042,"key":"venv-Linux-vllm0.22.1-e1e209137e9f934413d39043bb41a9b262c2191fed1dc9e71f54c13de7730ce3"},{"inode":95816672,"key":"venv-Linux-vllm0.22.1-f2c9cb3538ce72a1c8c26fd8b4cfe7926e97c7de1b41e68261b21a212d2e587d"},{"inode":95564721,"key":"venv-Linux-vllm0.22.1rc1-b284862e-f2c9cb3538ce72a1c8c26fd8b4cfe7926e97c7de1b41e68261b21a212d2e587d"},{"inode":103047169,"key":"venv-v2-caspi-Linux-X64-vllm0.22.1-160fad4e51f1e15e5dcef07d4f142d52fbe5fd177289f923df449194ef34e6d9"}]'
     steps:
-      - name: Verify runner and measure every venv
+      - name: Audit candidate venv references and hardlinks
         shell: bash
         run: |
           set +e
           set -uo pipefail
           export LC_ALL=C
-          root=/data/actions/cache
           host=$(timeout 10s hostname -s); rc=$?
-          if ((rc != 0)) || [[ "${RUNNER_NAME:-}" != caspi || "$host" != caspi ]]; then printf 'RUNNER_MISMATCH runner=%s host=%s status=%s\n' "${RUNNER_NAME:-unset}" "$host" "$rc"; exit 1; fi
-          printf 'RUNNER_VERIFIED name=%s hostname=%s run=%s time=%s\n' "$RUNNER_NAME" "$host" "${GITHUB_RUN_ID:-unset}" "$(date -u +%FT%TZ)"
-          canonical=$(timeout 10s realpath -e -- "$root"); rc=$?
-          if ((rc != 0)) || [[ ! -d "$root" ]]; then echo CACHE_ROOT_INACCESSIBLE; exit 1; fi
-          printf 'CACHE_ROOT path=%s canonical=%s\n' "$root" "$canonical"
-          incomplete=0
-          timeout 10s df -PT -B1 -- "$root"; rc=$?; printf 'DF_STATUS %s\n' "$rc"; ((rc == 0)) || incomplete=1
-          timeout 10s df -Pi -- "$root"; rc=$?; printf 'INODE_STATUS %s\n' "$rc"; ((rc == 0)) || incomplete=1
-          timeout 10s findmnt -T "$root" -o TARGET,SOURCE,FSTYPE; rc=$?; printf 'MOUNT_STATUS %s\n' "$rc"; ((rc == 0)) || incomplete=1
+          if ((rc != 0)) || [[ "${RUNNER_NAME:-}" != caspi || "$host" != caspi ]]; then
+            printf 'RUNNER_MISMATCH runner=%s host=%s status=%s\n' "${RUNNER_NAME:-unset}" "$host" "$rc"
+            exit 1
+          fi
+          printf 'RUNNER_VERIFIED name=%s hostname=%s run=%s\n' "$RUNNER_NAME" "$host" "${GITHUB_RUN_ID:-unset}"
           reader=()
-          if [[ $(id -u) == 0 ]]; then echo 'READER root'; elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then reader=(sudo -n); echo 'READER sudo'; else echo 'READER runner'; fi
-          echo BEGIN_ROOT_SIZES_BYTES
-          timeout 240s nice -n 19 "${reader[@]}" du -x -B1 -d 1 -- "$root"; rc=$?
-          printf 'ROOT_DU_STATUS %s\n' "$rc"; ((rc == 0)) || incomplete=1
-          echo BEGIN_VENV_INVENTORY
-          timeout 1000s bash -c '
-            set +e
-            set -uo pipefail
-            root=$1; canonical=$2; shift 2; prefix=("$@")
-            "${prefix[@]}" find -P "$root" -xdev -maxdepth 3 \( -name "pre-commit-*" -type d -prune \) -o \( -name .venv \( -type d -o -type l \) -print0 -prune \) | {
-              count=0; failed=0
-              while IFS= read -r -d "" path; do
-                count=$((count + 1))
-                resolved=$(timeout 10s "${prefix[@]}" realpath -e -- "$path"); rc=$?
-                if ((rc != 0)); then printf "VENV_UNREADABLE path=%q status=%s\n" "$path" "$rc"; failed=1; continue; fi
-                case "$resolved" in "$canonical"/*) ;; *) printf "VENV_OUTSIDE path=%q resolved=%q\n" "$path" "$resolved"; failed=1; continue;; esac
-                printf "VENV_BEGIN path=%q resolved=%q\n" "$path" "$resolved"
-                timeout 10s "${prefix[@]}" stat -c "VENV_METADATA inode=%i uid=%u gid=%g mode=%a atime=%X mtime=%Y ctime=%Z" -- "$resolved"; rc=$?
-                printf "VENV_STAT_STATUS %s\n" "$rc"; ((rc == 0)) || failed=1
-                parent=${path%/.venv}
-                timeout 10s "${prefix[@]}" stat -c "KEY_METADATA inode=%i uid=%u gid=%g mode=%a atime=%X mtime=%Y ctime=%Z" -- "$parent"; rc=$?
-                printf "KEY_STAT_STATUS %s\n" "$rc"; ((rc == 0)) || failed=1
-                timeout 45s nice -n 19 "${prefix[@]}" du -s -B1 -x -- "$resolved"; rc=$?
-                printf "VENV_DU_STATUS %s\n" "$rc"; ((rc == 0)) || failed=1
-                echo VENV_END
-              done
-              printf "VENV_COUNT %s\n" "$count"
-              if ((count == 0)); then echo NO_VENV_FOUND; failed=1; fi
-              exit "$failed"
-            }
-          ' bash "$root" "$canonical" "${reader[@]}"; rc=$?
-          printf 'VENV_INVENTORY_STATUS %s\n' "$rc"; ((rc == 0)) || incomplete=1
-          printf 'INVENTORY_RESULT incomplete=%s\n' "$incomplete"
-          exit "$incomplete"
-      - name: Inspect active cache references
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          set -uo pipefail
-          if [[ "${RUNNER_NAME:-}" != caspi || "$(timeout 10s hostname -s)" != caspi ]]; then echo RUNNER_MISMATCH; exit 1; fi
-          timeout 180s python3 - <<'PY'
-          import collections, json, os, pathlib
-          root = '/data/actions/cache/'
-          counts = collections.Counter()
-          hits = set()
-          def record(pid, uid, source, path):
-              if path.endswith(' (deleted)'):
-                  path = path[:-10]
-              if not path.startswith(root):
-                  return
-              key = path[len(root):].split('/', 1)[0]
-              if key.startswith(('venv-', 'gr-runtime-v1-')):
-                  hits.add((pid, uid, key, source))
-          for proc in pathlib.Path('/proc').iterdir():
-              if not proc.name.isdecimal():
-                  continue
-              pid = int(proc.name)
-              try:
-                  uid = proc.stat().st_uid
-              except FileNotFoundError:
-                  counts['vanished'] += 1; continue
-              except OSError:
-                  counts['unreadable_proc'] += 1; continue
-              counts['processes_seen'] += 1
-              for name in ('cwd', 'exe'):
+          if [[ $(id -u) == 0 ]]; then
+            echo 'READER root'
+          elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            reader=(sudo -n env "VENV_CANDIDATES_JSON=$VENV_CANDIDATES_JSON" "RUNNER_WORKSPACE=${RUNNER_WORKSPACE:-}" "GITHUB_WORKSPACE=${GITHUB_WORKSPACE:-}")
+            echo 'READER noninteractive-sudo'
+          else
+            echo 'READER runner; inaccessible paths will be reported'
+          fi
+          timeout 1200s nice -n 19 "${reader[@]}" python3 -B - <<'AUDIT_PYTHON'
+          #!/usr/bin/env python3
+          """Read-only inventory of selected caspi venv inode and process references."""
+          import collections
+          import json
+          import os
+          import re
+          import stat
+          import sys
+          import time
+          from pathlib import Path
+
+          ROOT = Path("/data/actions/cache")
+          CANDIDATES = json.loads(os.environ["VENV_CANDIDATES_JSON"])
+          # Conservative bounds: stop rather than silently claiming a complete result.
+          MAX_MULTILINK_INODES = 3000000
+          MAX_PROCESS_REFS = 3000000
+
+
+          def now():
+              return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+          def emit(kind, **data):
+              print(kind, json.dumps(data, sort_keys=True, separators=(",", ":")), flush=True)
+
+
+          def validate_selection():
+              if len(CANDIDATES) != 29:
+                  raise ValueError("expected exactly 29 reviewed candidates")
+              names = [x["key"] for x in CANDIDATES]
+              if len(set(names)) != len(names):
+                  raise ValueError("duplicate candidate")
+              for obj in CANDIDATES:
+                  if set(obj) != {"key", "inode"} or type(obj["inode"]) is not int:
+                      raise ValueError("candidate schema")
+                  if not re.fullmatch(r"(?:venv-|gr-runtime-v1-)[A-Za-z0-9._-]+", obj["key"]):
+                      raise ValueError("unsafe key")
+              if ROOT.resolve(strict=True) != ROOT:
+                  raise ValueError("cache root is a symlink or changed")
+
+
+          def mountpoints():
+              # Decode only kernel mountinfo path escapes. Never print the mount table.
+              result = []
+              with open("/proc/self/mountinfo", encoding="utf-8") as f:
+                  for line in f:
+                      fields = line.split()
+                      if len(fields) < 6 or "-" not in fields:
+                          raise ValueError("malformed mountinfo")
+                      mount = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[4])
+                      if mount.startswith(str(ROOT) + "/"):
+                          result.append(mount)
+              return result
+
+
+          def process_snapshot():
+              started = now()
+              refs = collections.defaultdict(set)
+              counts = collections.Counter()
+              root_dev = ROOT.stat().st_dev
+              total_refs = 0
+
+              def add(st_dev, st_ino, pid, uid, origin):
+                  nonlocal total_refs
+                  if st_ino and st_dev == root_dev:
+                      refs[(st_dev, st_ino)].add((pid, uid, origin))
+                      total_refs += 1
+                      if len(refs) > MAX_PROCESS_REFS or total_refs > MAX_PROCESS_REFS:
+                          raise RuntimeError("process reference limit exceeded")
+
+              for proc in Path("/proc").iterdir():
+                  if not proc.name.isdecimal():
+                      continue
+                  pid = int(proc.name)
                   try:
-                      record(pid, uid, name, os.readlink(proc / name))
+                      uid = proc.stat().st_uid
                   except FileNotFoundError:
-                      counts['vanished_or_missing'] += 1
+                      counts["vanished"] += 1
+                      continue
                   except OSError:
-                      counts['unreadable_links'] += 1
-              try:
-                  entries = list((proc / 'fd').iterdir())
-              except FileNotFoundError:
-                  counts['vanished_or_missing'] += 1; entries = []
-              except OSError:
-                  counts['unreadable_fd_dirs'] += 1; entries = []
-              for entry in entries:
+                      counts["unreadable_proc"] += 1
+                      continue
+                  counts["processes_seen"] += 1
+                  for name in ("cwd", "exe"):
+                      try:
+                          st = (proc / name).stat()
+                          add(st.st_dev, st.st_ino, pid, uid, name)
+                      except FileNotFoundError:
+                          counts["vanished_or_missing"] += 1
+                      except OSError:
+                          counts["unreadable_links"] += 1
                   try:
-                      record(pid, uid, 'fd', os.readlink(entry))
+                      fds = list((proc / "fd").iterdir())
                   except FileNotFoundError:
-                      counts['vanished_or_missing'] += 1
+                      counts["vanished_or_missing"] += 1
+                      fds = []
                   except OSError:
-                      counts['unreadable_fds'] += 1
+                      counts["unreadable_fd_dirs"] += 1
+                      fds = []
+                  for fd in fds:
+                      try:
+                          st = fd.stat()
+                          add(st.st_dev, st.st_ino, pid, uid, "fd")
+                      except FileNotFoundError:
+                          counts["vanished_or_missing"] += 1
+                      except OSError:
+                          counts["unreadable_fds"] += 1
+                  try:
+                      with (proc / "maps").open(encoding="utf-8", errors="replace") as f:
+                          for line in f:
+                              # No process path, command or environment is retained.
+                              fields = line.split(None, 5)
+                              if len(fields) < 5:
+                                  counts["malformed_maps"] += 1
+                                  continue
+                              try:
+                                  major, minor = (int(v, 16) for v in fields[3].split(":"))
+                                  ino = int(fields[4])
+                                  add(os.makedev(major, minor), ino, pid, uid, "maps")
+                              except ValueError:
+                                  counts["malformed_maps"] += 1
+                  except FileNotFoundError:
+                      counts["vanished_or_missing"] += 1
+                  except OSError:
+                      counts["unreadable_maps"] += 1
+              incomplete = any(v for k, v in counts.items() if k != "processes_seen")
+              emit("PROCESS_SNAPSHOT", start=started, end=now(), counts=dict(counts),
+                   ref_inodes=len(refs), reference_records=total_refs, incomplete=incomplete)
+              return refs, incomplete
+
+
+          def workspace_snapshot(keys):
+              # Restrict to immediate conventional runner workspaces; output no repo name
+              # or workspace path. This scan is not proof that no other workspaces exist.
+              raw = os.environ.get("RUNNER_WORKSPACE", "")
+              github = os.environ.get("GITHUB_WORKSPACE", "")
+              if raw:
+                  base = Path(raw).parent
+              elif github:
+                  base = Path(github).parent.parent
+              else:
+                  emit("WORKSPACE_SCAN", status="unknown_no_workspace_variable")
+                  return True
+              if not base.is_absolute() or base.name != "_work":
+                  emit("WORKSPACE_SCAN", status="unknown_unexpected_workspace_layout")
+                  return True
               try:
-                  with (proc / 'maps').open('r', encoding='utf-8', errors='replace') as stream:
-                      for line in stream:
-                          parts = line.rstrip('\n').split(None, 5)
-                          if len(parts) == 6:
-                              record(pid, uid, 'maps', parts[5])
-              except FileNotFoundError:
-                  counts['vanished_or_missing'] += 1
+                  if base.resolve(strict=True) != base:
+                      emit("WORKSPACE_SCAN", status="unknown_workspace_symlink")
+                      return True
               except OSError:
-                  counts['unreadable_maps'] += 1
-          for pid, uid, key, source in sorted(hits):
-              print('PROC_CACHE_REFERENCE', json.dumps({'pid': pid, 'uid': uid, 'cache_key': key, 'source': source}, sort_keys=True))
-          print('PROC_SCAN_COUNTS', json.dumps(counts, sort_keys=True))
-          print('PROC_SCAN_INTERPRETATION unknown_not_proof_of_no_consumers; permission errors, races, symlink paths and non-file references may hide consumers')
-          PY
-          rc=$?; printf 'PROC_SCAN_STATUS %s\n' "$rc"
-          if ((rc != 0)); then echo PROC_SCAN_INCOMPLETE; exit "$rc"; fi
+                  emit("WORKSPACE_SCAN", status="unknown_unreadable")
+                  return True
+              counts = collections.Counter()
+              hits = collections.Counter()
+              try:
+                  projects = list(os.scandir(base))
+              except OSError:
+                  emit("WORKSPACE_SCAN", status="unknown_unreadable")
+                  return True
+              for project in projects:
+                  try:
+                      if not project.is_dir(follow_symlinks=False):
+                          continue
+                      counts["project_dirs"] += 1
+                      # GitHub runner layouts conventionally use _work/name/name/.venv;
+                      # also check the direct workspace root. Do not recursively scan.
+                      for candidate in (Path(project.path) / ".venv",
+                                        Path(project.path) / project.name / ".venv"):
+                          try:
+                              if not candidate.is_symlink():
+                                  continue
+                              target = candidate.resolve(strict=True)
+                              counts["visible_venv_symlinks"] += 1
+                              try:
+                                  relative = target.relative_to(ROOT)
+                              except ValueError:
+                                  counts["outside_cache"] += 1
+                                  continue
+                              if relative.parts and relative.parts[0] in keys:
+                                  hits[relative.parts[0]] += 1
+                          except FileNotFoundError:
+                              counts["vanished_or_broken"] += 1
+                          except OSError:
+                              counts["unreadable"] += 1
+                  except OSError:
+                      counts["unreadable"] += 1
+              emit("WORKSPACE_SCAN", status="partial_conventional_layout_only", counts=dict(counts),
+                   candidates_with_visible_links=dict(hits))
+              return True
+
+
+          def scan_candidates(proc_refs):
+              root_stat = ROOT.stat()
+              mounts_before = mountpoints()
+              candidates = {}
+              # Store only non-directory files with st_nlink > 1.
+              links = {}
+              proc_hits = collections.defaultdict(set)
+              flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+              root_fd = os.open(ROOT, flags)
+              opened_root = os.fstat(root_fd)
+              if (root_stat.st_dev, root_stat.st_ino) != (opened_root.st_dev, opened_root.st_ino):
+                  os.close(root_fd)
+                  raise RuntimeError("cache root changed while opening")
+
+              def same_entry(a, b):
+                  return (a.st_dev, a.st_ino, stat.S_IFMT(a.st_mode)) == (
+                      b.st_dev, b.st_ino, stat.S_IFMT(b.st_mode)
+                  )
+
+              def times(st):
+                  return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns)
+
+              def observe_fd(fd, result, key, depth):
+                  if depth > 256:
+                      result["incomplete"] = True
+                      result["errors"]["depth_limit"] += 1
+                      return
+                  ds_before = os.fstat(fd)
+                  if not stat.S_ISDIR(ds_before.st_mode) or ds_before.st_dev != root_stat.st_dev:
+                      result["incomplete"] = True
+                      result["errors"]["directory_identity_changed"] += 1
+                      return
+                  result["directories"] += 1
+                  result["directory_allocated_bytes"] += ds_before.st_blocks * 512
+                  for ref in proc_refs.get((ds_before.st_dev, ds_before.st_ino), ()):
+                      proc_hits[key].add(ref)
+                  try:
+                      with os.scandir(fd) as entries:
+                          for entry in entries:
+                              try:
+                                  st = entry.stat(follow_symlinks=False)
+                                  if st.st_dev != root_stat.st_dev:
+                                      result["incomplete"] = True
+                                      result["errors"]["cross_device"] += 1
+                                      continue
+                                  if stat.S_ISDIR(st.st_mode):
+                                      # dirfd + O_NOFOLLOW prevents following a replaced
+                                      # directory symlink outside the authorized root.
+                                      child_fd = os.open(entry.name, flags, dir_fd=fd)
+                                      try:
+                                          opened = os.fstat(child_fd)
+                                          if not same_entry(st, opened):
+                                              result["incomplete"] = True
+                                              result["errors"]["directory_replaced"] += 1
+                                              continue
+                                          observe_fd(child_fd, result, key, depth + 1)
+                                          named_after = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
+                                          if not same_entry(opened, named_after):
+                                              result["incomplete"] = True
+                                              result["errors"]["directory_replaced"] += 1
+                                      finally:
+                                          os.close(child_fd)
+                                      continue
+                                  if stat.S_ISREG(st.st_mode):
+                                      result["files"] += 1
+                                  elif stat.S_ISLNK(st.st_mode):
+                                      result["symlinks"] += 1
+                                  else:
+                                      result["other"] += 1
+                                      result["incomplete"] = True
+                                  for ref in proc_refs.get((st.st_dev, st.st_ino), ()):
+                                      proc_hits[key].add(ref)
+                                  if st.st_nlink == 1:
+                                      result["single_link_allocated_bytes"] += st.st_blocks * 512
+                                  elif st.st_nlink > 1:
+                                      inode = (st.st_dev, st.st_ino)
+                                      obj = links.get(inode)
+                                      if obj is None:
+                                          obj = {"nlink": st.st_nlink, "blocks": st.st_blocks,
+                                                 "mode": st.st_mode, "per_key": collections.Counter(),
+                                                 "inconsistent": False}
+                                          links[inode] = obj
+                                          if len(links) > MAX_MULTILINK_INODES:
+                                              raise RuntimeError("hardlink inode limit exceeded")
+                                      elif (obj["nlink"], obj["blocks"], obj["mode"]) != (
+                                          st.st_nlink, st.st_blocks, st.st_mode
+                                      ):
+                                          obj["inconsistent"] = True
+                                      obj["per_key"][key] += 1
+                                      result["multi_link_entries"] += 1
+                                  else:
+                                      result["incomplete"] = True
+                                      result["errors"]["invalid_nlink"] += 1
+                              except FileNotFoundError:
+                                  result["incomplete"] = True
+                                  result["errors"]["vanished"] += 1
+                              except OSError:
+                                  result["incomplete"] = True
+                                  result["errors"]["unreadable_or_changed_entry"] += 1
+                      ds_after = os.fstat(fd)
+                      if times(ds_before) != times(ds_after):
+                          result["incomplete"] = True
+                          result["errors"]["directory_changed"] += 1
+                  except OSError:
+                      result["incomplete"] = True
+                      result["errors"]["unreadable_directory"] += 1
+
+              try:
+                  for item in CANDIDATES:
+                      key, expected_inode = item["key"], item["inode"]
+                      path = ROOT / key
+                      result = {
+                          "key": key, "expected_inode": expected_inode, "incomplete": False,
+                          "files": 0, "directories": 0, "symlinks": 0, "other": 0,
+                          "single_link_allocated_bytes": 0, "directory_allocated_bytes": 0,
+                          "multi_link_entries": 0, "errors": collections.Counter(),
+                      }
+                      candidates[key] = result
+                      try:
+                          before = os.stat(key, dir_fd=root_fd, follow_symlinks=False)
+                          if not stat.S_ISDIR(before.st_mode) or before.st_dev != root_stat.st_dev:
+                              raise ValueError("candidate is not a same-device real directory")
+                          if before.st_ino != expected_inode:
+                              raise ValueError("candidate inode changed since reviewed inventory")
+                          if any(m == str(path) or m.startswith(str(path) + "/") for m in mounts_before):
+                              raise ValueError("nested mount including potential same-device bind mount")
+                          candidate_fd = os.open(key, flags, dir_fd=root_fd)
+                          try:
+                              opened = os.fstat(candidate_fd)
+                              if not same_entry(before, opened):
+                                  raise ValueError("candidate replaced while opening")
+                              observe_fd(candidate_fd, result, key, 0)
+                          finally:
+                              os.close(candidate_fd)
+                          after = os.stat(key, dir_fd=root_fd, follow_symlinks=False)
+                          if times(before) != times(after):
+                              result["incomplete"] = True
+                              result["errors"]["key_directory_changed"] += 1
+                      except (OSError, ValueError) as exc:
+                          result["incomplete"] = True
+                          result["errors"]["key_unavailable_or_changed"] += 1
+                          result["detail"] = str(exc)
+              finally:
+                  os.close(root_fd)
+              if set(mountpoints()) != set(mounts_before):
+                  for result in candidates.values():
+                      result["incomplete"] = True
+                      result["errors"]["mount_table_changed"] += 1
+              for result in candidates.values():
+                  result["multi_links_inside_key_allocated_bytes"] = 0
+                  result["multi_links_outside_key_allocated_bytes"] = 0
+                  result["multi_inodes_unstable"] = 0
+              group = {"multi_links_within_candidates_allocated_bytes": 0,
+                       "multi_links_outside_candidates_allocated_bytes": 0,
+                       "multi_inodes_unstable": 0}
+              for obj in links.values():
+                  count = sum(obj["per_key"].values())
+                  if obj["inconsistent"] or count > obj["nlink"]:
+                      group["multi_inodes_unstable"] += 1
+                      for key in obj["per_key"]:
+                          candidates[key]["multi_inodes_unstable"] += 1
+                          candidates[key]["incomplete"] = True
+                      continue
+                  size = obj["blocks"] * 512
+                  field = ("multi_links_within_candidates_allocated_bytes" if count == obj["nlink"]
+                           else "multi_links_outside_candidates_allocated_bytes")
+                  group[field] += size
+                  for key, local_count in obj["per_key"].items():
+                      field = ("multi_links_inside_key_allocated_bytes" if local_count == obj["nlink"]
+                               else "multi_links_outside_key_allocated_bytes")
+                      candidates[key][field] += size
+              for key, result in candidates.items():
+                  result["errors"] = dict(result["errors"])
+                  result["visible_process_refs"] = [
+                      {"pid": pid, "uid": uid, "source": source}
+                      for pid, uid, source in sorted(proc_hits[key])
+                  ]
+                  emit("KEY_INODE_AUDIT", **result)
+              group["multi_inodes"] = len(links)
+              group["candidates_incomplete"] = sum(r["incomplete"] for r in candidates.values())
+              group["single_link_allocated_bytes"] = sum(r["single_link_allocated_bytes"]
+                                                            for r in candidates.values())
+              group["directory_allocated_bytes"] = sum(r["directory_allocated_bytes"]
+                                                          for r in candidates.values())
+              emit("GROUP_INODE_AUDIT", **group)
+              return group["candidates_incomplete"] != 0
+
+
+          def main():
+              started = now()
+              validate_selection()
+              emit("AUDIT_START", start=started, candidate_count=len(CANDIDATES), reader_uid=os.geteuid(),
+                   no_delete=True)
+              emit("SCAN_PASS", phase="before")
+              proc_refs, proc_incomplete = process_snapshot()
+              workspace_incomplete = workspace_snapshot({x["key"] for x in CANDIDATES})
+              inode_incomplete = scan_candidates(proc_refs)
+              del proc_refs
+              # Take a fresh process snapshot and re-scan inodes so newly visible
+              # processes are actually matched, not just counted. Even two passes are
+              # not proof against starts, exits, permissions or later users.
+              emit("SCAN_PASS", phase="after")
+              after_refs, after_incomplete = process_snapshot()
+              after_inode_incomplete = scan_candidates(after_refs)
+              incomplete = (proc_incomplete or after_incomplete or workspace_incomplete
+                            or inode_incomplete or after_inode_incomplete)
+              emit("AUDIT_END", start=started, end=now(), incomplete=incomplete,
+                   process_before_incomplete=proc_incomplete, process_after_incomplete=after_incomplete,
+                   workspace_partial=workspace_incomplete, inode_before_incomplete=inode_incomplete,
+                   inode_after_incomplete=after_inode_incomplete,
+                   message="Snapshot only. No claim of absence of consumers or guaranteed reclaim.")
+              return 1 if incomplete else 0
+
+
+          if __name__ == "__main__":
+              try:
+                  sys.exit(main())
+              except Exception as exc:
+                  emit("AUDIT_ERROR", error_type=type(exc).__name__, detail=str(exc))
+                  sys.exit(2)
+          AUDIT_PYTHON
+          rc=$?
+          printf 'DEEP_AUDIT_EXIT %s (124=timeout; nonzero indicates partial or failed evidence)\n' "$rc"
+          exit "$rc"
