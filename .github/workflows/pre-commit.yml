@@ -22,6 +22,7 @@ jobs:
         with:
           ref: 3cce14564e04282efa1abf527591868aa67de599
           persist-credentials: false
+          fetch-depth: 2
       - name: Verify source and machine
         shell: bash
         run: |
@@ -106,5 +107,6 @@ jobs:
             ${{ runner.temp }}/cpu-pytest.log
             ${{ runner.temp }}/cpu-packages.txt
           if-no-files-found: warn
+
 
 
