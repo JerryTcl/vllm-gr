@@ -68,6 +68,14 @@ buffers when a new batch needs a graph. Its Backend row bound, retirement and
 shutdown semantics remain unchanged. Upstream V1/NPU fixes in that parent,
 including B=2 Prefill capture, are retained.
 
+For graph-enabled CUDA execution, the shared stage runner retains one drained
+adapter per logical batch size while the context, workspace and search geometry
+remain compatible. Returning to an already-warmed B reuses that adapter's fixed
+input/attention addresses and its Decode graphs instead of clearing and
+recapturing them. Each session still rebinds its own inputs and selectors.
+Incompatible resources or geometry invalidate the bounded cache; V2 runtime
+cleanup removes it before model replacement or shutdown.
+
 The default stage hooks implement that V1 policy. `V2StageExecutionHooks`
 selects fixed storage, startup-only graph replay, batched Backend admission
 and full-member retirement. The V2 installer alone supplies the extended
