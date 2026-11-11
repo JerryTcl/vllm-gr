@@ -3,6 +3,9 @@
 See the [local validation example](RESULTS.md) for measured residual overhead
 using the generated standard MoE model.
 
+The [outside-latency RFC](../../docs/beam_serving_outside_latency_rfc.md) tracks
+the measurement contract, current evidence and remaining attribution work.
+
 This branch starts from JiusiServe/vllm-gr `main` at `142b8b2` and retains the
 three generic changes proposed in upstream PRs
 [#630](https://github.com/JiusiServe/vllm-gr/pull/630),
