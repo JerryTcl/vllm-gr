@@ -1,5 +1,8 @@
 # Beam frontend overhead reproduction
 
+See the [local validation example](RESULTS.md) for measured residual overhead
+using the generated standard MoE model.
+
 This branch starts from JiusiServe/vllm-gr `main` at `142b8b2` and retains the
 three generic changes proposed in upstream PRs
 [#630](https://github.com/JiusiServe/vllm-gr/pull/630),
