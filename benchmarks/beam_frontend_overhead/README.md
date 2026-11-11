@@ -99,7 +99,7 @@ For each measured request the script records:
 | `rpc_ready_ms` | Client call through protobuf decoding and required array conversion |
 | `gpu_stage_ms` | Sum of six paired CUDA intervals: model/logits and selection for each of three stages |
 | `outside_stage_ms` | The same request's `rpc_ready_ms - gpu_stage_ms` |
-| `probe_off_rpc_ms` | Mean of separate calls with event recording disabled |
+| `probe_off_rpc_ms` | Separate RPC calls with event recording disabled |
 
 CUDA events are preallocated. No synchronization, file writes, or control RPCs
 are inserted into the timed GenerateBatch calls. A separate excluded control
@@ -135,5 +135,5 @@ and pair counts fail closed if the expected three-stage path is not observed.
   `_p99_ms` columns for every timing field.
 
 Report the device, architecture/preset, execution mode, revision, sample count,
-wire format and all four timing fields together. A tiny-model run verifies the
+wire format and mean/P99 for all four timing fields together. A tiny-model run verifies the
 path and can expose host overhead; it does not predict a larger model's latency.
