@@ -14,6 +14,7 @@ from vllm import SamplingParams
 from vllm.exceptions import VLLMValidationError
 from vllm.sampling_params import RequestOutputKind
 
+from vllm_gr.config import GRConfig
 from vllm_gr.entrypoints.beam_search_v1.client import AsyncBeamSearchClient
 from vllm_gr.v1.beam.batch_contracts import (
     ADMISSION_REJECTED_CODE,
@@ -44,6 +45,9 @@ class BeamVllmEngineServicer(VllmEngineServicer):
         super().__init__(engine, start_time)
         self.client = AsyncBeamSearchClient(engine_client=engine)
         self._beam_tasks = {}
+        config = getattr(engine, "vllm_config", None)
+        table = GRConfig.from_vllm_config(config).constraint_table if config is not None else None
+        self._candidate_width = None if table is None else table.candidate_width
 
     def decode_tokens(self, tokenized):
         if tokenized.HasField("input_ids_i64_le"):
@@ -108,6 +112,15 @@ class BeamVllmEngineServicer(VllmEngineServicer):
                 if options.HasField("length_penalty")
                 else 1.0,
                 dynamic_beam_widths=tuple(options.dynamic_beam_widths) or None,
+                candidate_width=self._candidate_width,
+                per_parent_beam_widths=(
+                    (options.dynamic_beam_widths[0] if options.dynamic_beam_widths else width,)
+                    + (self._candidate_width,) * (source.max_tokens - 1)
+                    if self._candidate_width is not None
+                    and (options.dynamic_beam_widths or self._candidate_width != width)
+                    and str(device).split(":")[0] == "cuda"
+                    else None
+                ),
             )
             output = BeamOutputOptions(
                 num_return_sequences=result_width,

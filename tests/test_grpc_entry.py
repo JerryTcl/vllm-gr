@@ -121,6 +121,41 @@ def test_full_request_to_numpy_batch(binary: bool) -> None:
     assert batch.items[0].request.external_req_id == "id-0"
 
 
+@pytest.mark.parametrize(
+    "width,widths,expected",
+    [
+        (1024, [256, 512, 1024], (256, 256, 256)),
+        (1024, [64, 512, 1024], (64, 256, 256)),
+        (2, [], (2, 256, 256)),
+    ],
+)
+def test_configured_candidate_width_supports_beam_geometry(
+    width: int, widths: list[int], expected: tuple[int, ...]
+) -> None:
+    from vllm_gr.config import BeamExecutionMode, ConstraintTableConfig, GRConfig
+    from vllm_gr.config.parser import gr_config_to_mapping
+
+    config = GRConfig(
+        beam_execution_mode=BeamExecutionMode.V1,
+        beam_max_width=1024,
+        constraint_table=ConstraintTableConfig(max_top_k=256, enabled=False, candidate_width=256),
+    )
+    backend = engine()
+    backend.vllm_config = SimpleNamespace(
+        additional_config={"vllm_gr": gr_config_to_mapping(config)}
+    )
+    servicer = BeamVllmEngineServicer(backend, 0.0)
+    value = message()
+    value.sampling_params.n = width
+    value.beam_search.beam_width = width
+    value.beam_search.dynamic_beam_widths.extend(widths)
+    value.beam_search.result_width = min(width, 1000)
+    batch, _ = servicer.build_batch([value])
+    assert batch.beam_params.candidate_width == 256
+    assert batch.beam_params.per_parent_beam_widths == expected
+    assert batch.output_options.num_return_sequences == min(width, 1000)
+
+
 @pytest.mark.parametrize("binary", [False, True])  # type: ignore[misc]
 @pytest.mark.parametrize("trie_id", [None, 0, 1, 2**32 - 1])  # type: ignore[misc]
 def test_per_input_trie_selector_wire_and_batch_mapping(binary: bool, trie_id: int | None) -> None:
