@@ -27,7 +27,7 @@ through Engine Core and Worker staging. The code baseline is `decode_graph`.
 - The servicer caches the configured candidate width at startup and forwards it
   into Beam parameters. CUDA requests with independent K/W use the first
   retained width for their initial expansion, followed by the configured K.
-  This supports large dynamic Beams without adding protobuf request fields.
+  Large dynamic Beams can use this default without sending an explicit K schedule.
 - `BeamSearchOptions.per_parent_beam_widths` optionally supplies one CUDA
   per-parent expansion width per generation stage. It overrides the engine's
   default K schedule, while the configured candidate width remains the reserved

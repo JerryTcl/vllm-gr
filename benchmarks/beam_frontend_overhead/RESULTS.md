@@ -1,6 +1,6 @@
 # Public-model serving measurements
 
-One independent H20 start on code revision `8807861f9f1c`.
+One independent H20 start on code revision `fb734fda5cf5`.
 Each timing cell is arithmetic mean / P99 in milliseconds. All samples,
 including slow requests, are retained. P99 uses linear interpolation; 300
 samples per cell provide a finite-sample diagnostic, not a production SLO.
@@ -24,7 +24,7 @@ Outside P99 is calculated from the paired per-request differences. It is not
   65/4097 are token counts per input; they do not encode item-feature history.
 - Explicit gRPC GenerateBatch, B1/B4; one RPC batch in flight.
 - Fixed 1000 returned sequences per input, each with three generated tokens.
-- W=[256,512,1024], per-parent K=[256,256,256], length_penalty=0.
+- W=[256,512,1024], per-parent K=[256,128,64], length_penalty=0.
 - Native max_num_seqs=4; GR manages Decode Beam fanout. max_model_len=4100,
   max_num_batched_tokens=16388. Prefix caching is disabled; no result cache.
 - Eager Prefill and GR Decode CUDA Graph replay; normal Python GC,
@@ -35,23 +35,49 @@ Outside P99 is calculated from the paired per-request differences. It is not
   600 Decode graph replays per cell. Repeated/default/binary token IDs and
   FP32 scores matched.
 
+## Matched search and resource configuration
+
+The request schedule is checked again on the Worker for every measured RPC.
+The candidate workspace capacity stays at 256 while stage K changes.
+
+| Setting | Value |
+| --- | --- |
+| `beam.execution_mode` | `v1` |
+| `beam.worker_decision` | `true` |
+| `beam.graph_enabled` | `true` |
+| `beam.max_width` | `1024` |
+| `beam.max_decode_steps` | `3` |
+| `beam.online_batch_sizes` | `[1,2,4]` |
+| `max_num_seqs` | `4` |
+| `max_num_batched_tokens` | `16388` |
+| `max_model_len` | `4100` |
+| `constraint_table.max_top_k` | `256` |
+| `constraint_table.candidate_width` | `256` |
+| `beam_width` | `1024` |
+| `dynamic_beam_widths` | `[256,512,1024]` |
+| `per_parent_beam_widths` | `[256,128,64]` |
+| `result_width` | `1000` |
+| `max_tokens` | `3` |
+| `ignore_eos` | `true` |
+| `length_penalty` | `0` |
+
 ## Default gRPC output
 
 | Input tokens / Batch | Outside | Pure Forward | E2E |
 | --- | --- | --- | --- |
-| 65 / B1 | 2.25 / 2.76 | 9.76 / 10.62 | 12.01 / 13.37 |
-| 65 / B4 | 4.29 / 5.07 | 18.88 / 19.21 | 23.17 / 23.99 |
-| 4097 / B1 | 2.53 / 3.02 | 22.14 / 22.59 | 24.67 / 25.28 |
-| 4097 / B4 | 5.40 / 6.39 | 71.14 / 71.60 | 76.54 / 77.72 |
+| 65 / B1 | 2.43 / 3.29 | 9.69 / 12.20 | 12.13 / 15.48 |
+| 65 / B4 | 4.38 / 5.39 | 18.14 / 20.99 | 22.53 / 26.39 |
+| 4097 / B1 | 3.00 / 3.84 | 22.05 / 22.54 | 25.05 / 26.35 |
+| 4097 / B4 | 5.87 / 7.53 | 70.27 / 70.78 | 76.14 / 77.71 |
 
 ## Optional binary gRPC output
 
 | Input tokens / Batch | Outside | Pure Forward | E2E |
 | --- | --- | --- | --- |
-| 65 / B1 | 1.93 / 2.53 | 9.74 / 10.10 | 11.67 / 12.52 |
-| 65 / B4 | 2.93 / 3.56 | 18.95 / 20.80 | 21.88 / 24.21 |
-| 4097 / B1 | 2.32 / 2.82 | 22.16 / 22.47 | 24.48 / 25.22 |
-| 4097 / B4 | 3.72 / 4.40 | 71.06 / 71.44 | 74.77 / 75.66 |
+| 65 / B1 | 1.98 / 2.35 | 9.64 / 10.18 | 11.62 / 12.26 |
+| 65 / B4 | 3.08 / 4.03 | 18.24 / 22.35 | 21.33 / 26.16 |
+| 4097 / B1 | 2.41 / 3.18 | 21.96 / 22.28 | 24.37 / 25.42 |
+| 4097 / B4 | 4.21 / 5.70 | 70.34 / 70.68 | 74.55 / 75.98 |
 
 These standard-model measurements demonstrate residual outside time; they
 are not an equal-model or equal-catalog comparison against another framework.
@@ -80,20 +106,20 @@ use their own 100 calls. Each cell below is mean / P99 in milliseconds.
 
 | Input tokens / Batch | Output format | Post-RPC conversion | Array-ready time | RPC without timing probe |
 | --- | --- | --- | --- | --- |
-| 65 / B1 | default | 0.03 / 0.08 | 12.04 / 13.42 | 11.95 / 12.54 |
-| 65 / B1 | binary | 0.02 / 0.05 | 11.69 / 12.54 | 11.63 / 12.75 |
-| 65 / B4 | default | 0.08 / 0.14 | 23.24 / 24.09 | 23.12 / 24.05 |
-| 65 / B4 | binary | 0.04 / 0.09 | 21.92 / 24.26 | 21.79 / 24.27 |
-| 4097 / B1 | default | 0.03 / 0.07 | 24.70 / 25.32 | 24.70 / 25.44 |
-| 4097 / B1 | binary | 0.03 / 0.06 | 24.51 / 25.25 | 24.41 / 25.03 |
-| 4097 / B4 | default | 0.10 / 0.14 | 76.64 / 77.88 | 76.41 / 76.95 |
-| 4097 / B4 | binary | 0.06 / 0.08 | 74.83 / 75.72 | 74.80 / 75.63 |
+| 65 / B1 | default | 0.04 / 0.07 | 12.17 / 15.53 | 12.04 / 13.39 |
+| 65 / B1 | binary | 0.02 / 0.05 | 11.64 / 12.29 | 11.51 / 12.04 |
+| 65 / B4 | default | 0.08 / 0.14 | 22.60 / 26.53 | 22.79 / 25.07 |
+| 65 / B4 | binary | 0.05 / 0.07 | 21.37 / 26.21 | 21.17 / 23.46 |
+| 4097 / B1 | default | 0.05 / 0.09 | 25.10 / 26.40 | 25.09 / 26.21 |
+| 4097 / B1 | binary | 0.03 / 0.05 | 24.40 / 25.46 | 24.52 / 25.43 |
+| 4097 / B4 | default | 0.12 / 0.17 | 76.25 / 77.87 | 75.36 / 76.65 |
+| 4097 / B4 | binary | 0.07 / 0.10 | 74.62 / 76.06 | 74.29 / 75.33 |
 
 Previous tables labelled RPC through arrays included post-RPC conversion and
 used native max_num_seqs=4096. They remain in the original experiment outputs;
 the corrected boundary/configuration above was measured again, not inferred
 by subtracting aggregate statistics.
 
-Additional validation: 106 host gRPC/columnar tests, 116 CUDA constrained-TopK
+Additional validation: 115 host gRPC/columnar tests, 116 CUDA constrained-TopK
 and batch-switch graph tests, protobuf consistency, and targeted static checks
 passed. Full repository CI and NPU model validation were not run.
