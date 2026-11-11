@@ -80,6 +80,7 @@ def request(length, batch, count, binary):
                     beam_width=1024,
                     dynamic_beam_widths=WIDTHS,
                     result_width=count,
+                    length_penalty=0.0,
                 ),
             )
         )
@@ -160,7 +161,7 @@ def main():
         "--max-num-batched-tokens",
         str(max(4096, 4 * max(args.lengths))),
         "--max-num-seqs",
-        "4096",
+        str(max(args.batches)),
         "--max-logprobs",
         "256",
         "--no-enable-prefix-caching",
@@ -192,7 +193,9 @@ def main():
         load_format="dummy",
         dtype="bfloat16",
         prefix_cache=False,
-        measurement="RPC through client arrays; paired execute/sample CUDA intervals",
+        measurement="Full RPC return E2E; six CUDA intervals Forward; Outside = E2E - Forward",
+        max_num_seqs=max(args.batches),
+        length_penalty=0.0,
         command=command,
         versions={
             name: importlib.metadata.version(name)
@@ -231,13 +234,14 @@ def main():
                         def invoke(timeout=120):
                             begin = time.perf_counter_ns()
                             response = client.GenerateBatch(message, timeout=timeout)
+                            rpc_end = time.perf_counter_ns()
                             rows = consume(response, batch, count)
-                            elapsed = (time.perf_counter_ns() - begin) / 1e6
-                            return rows, elapsed
+                            arrays_end = time.perf_counter_ns()
+                            return rows, (rpc_end - begin) / 1e6, (arrays_end - rpc_end) / 1e6
 
                         control(dict(command="configure", enabled=True), timeout=60)
                         for _ in range(args.warmup):
-                            rows, _ = invoke(timeout=args.startup_timeout)
+                            rows, _, _ = invoke(timeout=args.startup_timeout)
                         control(dict(command="drain"), timeout=60)
                         before_graphs = control(dict(command="status"), timeout=60)[0]
                         key = (length, batch, count)
@@ -247,10 +251,18 @@ def main():
                         expected[key] = observed
                         samples = []
                         for index in range(args.samples):
-                            rows, elapsed = invoke()
+                            rows, elapsed, conversion = invoke()
                             if signature(rows) != expected[key]:
                                 raise RuntimeError("Repeated requests changed output IDs/scores")
-                            samples.append(dict(cell=tag, index=index, rpc_ready_ms=elapsed))
+                            samples.append(
+                                dict(
+                                    cell=tag,
+                                    index=index,
+                                    e2e_ms=elapsed,
+                                    client_conversion_ms=conversion,
+                                    arrays_ready_ms=elapsed + conversion,
+                                )
+                            )
                         workers = control(dict(command="drain"), timeout=60)
                         after_graphs = control(dict(command="status"), timeout=60)[0]
                         graph_delta = {
@@ -268,11 +280,11 @@ def main():
                             segments = events["segments"]
                             gpu = sum(s["ms"] for s in segments)
                             sample.update(
-                                gpu_stage_ms=gpu,
-                                outside_stage_ms=sample["rpc_ready_ms"] - gpu,
+                                forward_ms=gpu,
+                                outside_ms=sample["e2e_ms"] - gpu,
                                 segments=segments,
                             )
-                            if sample["outside_stage_ms"] < -0.1:
+                            if sample["outside_ms"] < -0.1:
                                 raise RuntimeError(
                                     "Invalid timing boundaries; intervals exceed RPC"
                                 )
@@ -280,14 +292,25 @@ def main():
                         off = [invoke()[1] for _ in range(args.control_samples)]
                         means = {
                             k: statistics.mean(s[k] for s in samples)
-                            for k in ("rpc_ready_ms", "gpu_stage_ms", "outside_stage_ms")
+                            for k in ("e2e_ms", "forward_ms", "outside_ms")
                         }
-                        means["probe_off_rpc_ms"] = statistics.mean(off)
                         p99s = {
                             k: float(np.percentile([s[k] for s in samples], 99, method="linear"))
-                            for k in ("rpc_ready_ms", "gpu_stage_ms", "outside_stage_ms")
+                            for k in ("e2e_ms", "forward_ms", "outside_ms")
                         }
-                        p99s["probe_off_rpc_ms"] = float(np.percentile(off, 99, method="linear"))
+                        diagnostics = {
+                            k: dict(
+                                mean=statistics.mean(s[k] for s in samples),
+                                p99=float(
+                                    np.percentile([s[k] for s in samples], 99, method="linear")
+                                ),
+                            )
+                            for k in ("client_conversion_ms", "arrays_ready_ms")
+                        }
+                        diagnostics["probe_off_e2e_ms"] = dict(
+                            mean=statistics.mean(off),
+                            p99=float(np.percentile(off, 99, method="linear")),
+                        )
                         report["cells"].append(
                             dict(
                                 tag=tag,
@@ -297,6 +320,7 @@ def main():
                                 wire=wire,
                                 means=means,
                                 p99s=p99s,
+                                diagnostics=diagnostics,
                                 output_sha256=observed,
                                 probe_off_samples_ms=off,
                                 graph_delta=graph_delta,
@@ -310,10 +334,29 @@ def main():
             rows = [
                 dict(
                     cell=c["tag"],
+                    input_tokens=c["prompt_tokens"],
+                    batch=c["batch"],
+                    result_width=c["result_width"],
+                    wire=c["wire"],
                     **{
                         f"{key.removesuffix('_ms')}_{stat}_ms": value
                         for stat, field in (("mean", "means"), ("p99", "p99s"))
                         for key, value in c[field].items()
+                    },
+                )
+                for c in report["cells"]
+            ]
+            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+        with (output / "diagnostics.csv").open("w") as stream:
+            rows = [
+                dict(
+                    cell=c["tag"],
+                    **{
+                        f"{key.removesuffix('_ms')}_{stat}_ms": value
+                        for key, stats in c["diagnostics"].items()
+                        for stat, value in stats.items()
                     },
                 )
                 for c in report["cells"]

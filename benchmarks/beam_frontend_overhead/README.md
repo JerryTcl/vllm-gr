@@ -68,6 +68,9 @@ Increase `--startup-timeout` if first-use JIT compilation takes longer. Adjust
   frontend, native EngineCore IPC, scheduler, CUDA Worker, constrained Beam
   search, terminal output, and gRPC reply.
 - One explicit batch is in flight. No separate batcher or proxy is involved.
+- Native `max_num_seqs` equals the largest requested input batch (four for the
+  default B1/B4 run). GR owns Decode Beam expansion; it is not counted as
+  thousands of native input requests. `length_penalty=0` is explicit.
 - BF16, TP=PP=1, no quantization, prefix caching off. In-request KV remains
   necessary for Attention. No result-cache layer is added.
 - Three generated tokens, `W=[256,512,1024]`, Beam capacity 1024, and configurable
@@ -92,19 +95,24 @@ Increase `--startup-timeout` if first-use JIT compilation takes longer. Adjust
 
 ## What the timings mean
 
-For each measured request the script records:
+The main report uses only three timing metrics, each shown as mean / P99:
 
-| Field | Boundary |
+| Metric / field | Boundary |
 | --- | --- |
-| `rpc_ready_ms` | Client call through protobuf decoding and required array conversion |
-| `gpu_stage_ms` | Sum of six paired CUDA intervals: model/logits and selection for each of three stages |
-| `outside_stage_ms` | The same request's `rpc_ready_ms - gpu_stage_ms` |
-| `probe_off_rpc_ms` | Separate RPC calls with event recording disabled |
+| Pure Forward / `forward_ms` | Sum of six CUDA intervals: three model executions and three Trie/TopK/Beam selections; includes input preparation, LM head and idle gaps inside each interval, excludes gaps between intervals |
+| E2E / `e2e_ms` | Client RPC call start through complete protobuf response return; includes RPC encoding/decoding, transport and server handling; excludes request construction and subsequent business/array conversion |
+| Outside / `outside_ms` | The same request's `e2e_ms - forward_ms`; includes scheduling gaps between intervals, interval-external request processing, IPC, result handling and communication |
 
 CUDA events are preallocated. No synchronization, file writes, or control RPCs
 are inserted into the timed GenerateBatch calls. A separate excluded control
-RPC drains the six pairs after the measured batch. The probe-off calls expose
-the observer's effect; they have no per-request GPU subtraction.
+RPC drains the six pairs after the measured batch.
+
+Auxiliary diagnostics are separate from the main performance table:
+`client_conversion_ms` measures post-RPC array conversion/validation;
+`arrays_ready_ms` includes that conversion after E2E; `probe_off_e2e_ms` comes
+from separate RPCs with event recording disabled. The latter checks observer
+effects and has no paired Forward measurement. These are saved under each
+cell's `diagnostics` and in `diagnostics.csv`.
 
 Every timing field reports the arithmetic mean and P99 over all its samples,
 using NumPy's linear percentile interpolation. Outside-stage P99 is calculated
@@ -114,11 +122,11 @@ estimate. The defaults use 300 paired and 100 probe-off calls per cell; this is
 still a finite-sample diagnostic, not a production tail-latency guarantee.
 
 CUDA intervals can include CPU launch gaps while the device waits inside a
-stage. `outside_stage_ms` includes the frontend, IPC, EngineCore/Worker host
-work outside those intervals, stage handoffs, output transfer, transport and
-client conversion. It must not be described as pure frontend time or as a
-comparison against another framework. The reproduction exposes the residual
-outside-stage cost and its scaling with returned candidates and input length.
+stage. Outside time is not pure frontend time. The public standard-model
+workload demonstrates interval-external cost, but it is not an equal-workload
+comparison against another framework. Earlier reports labelled `RPC through
+arrays` included post-RPC conversion and used a native capacity of 4096; those
+measurements must not be relabelled as the E2E boundary or configuration above.
 
 `frontend_probe.py` is a benchmark-only Worker extension. `server.py` adds a
 loopback control service for configuring/draining that probe. Neither changes
@@ -132,8 +140,9 @@ and pair counts fail closed if the expected three-stage path is not observed.
 - `summary.json`: environment, exact launch command, raw paired samples, output
   hashes, graph counters, unpaired probe-off controls, means, and P99 values.
 - `metrics.csv`: one row per configuration, with explicit `_mean_ms` and
-  `_p99_ms` columns for every timing field.
+  `_p99_ms` columns for Forward, E2E and Outside.
+- `diagnostics.csv`: client conversion and probe-off controls, separately.
 
 Report the device, architecture/preset, execution mode, revision, sample count,
-wire format and mean/P99 for all four timing fields together. A tiny-model run verifies the
+wire format and mean/P99 for all three timing metrics together. A tiny-model run verifies the
 path and can expose host overhead; it does not predict a larger model's latency.
