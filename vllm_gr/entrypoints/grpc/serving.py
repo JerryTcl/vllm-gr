@@ -96,6 +96,8 @@ class BeamVllmEngineServicer(VllmEngineServicer):
             if not source.HasField("max_tokens") or source.max_tokens < 1:
                 raise ValueError("sampling_params.max_tokens must be explicit and positive")
             options = message.beam_search
+            if options.per_parent_beam_widths and str(device).split(":")[0] != "cuda":
+                raise ValueError("per_parent_beam_widths currently requires CUDA")
             width = options.beam_width or source.n or 1
             if source.n and source.n != width:
                 raise ValueError("sampling_params.n must match beam_search.beam_width")
@@ -114,12 +116,15 @@ class BeamVllmEngineServicer(VllmEngineServicer):
                 dynamic_beam_widths=tuple(options.dynamic_beam_widths) or None,
                 candidate_width=self._candidate_width,
                 per_parent_beam_widths=(
-                    (options.dynamic_beam_widths[0] if options.dynamic_beam_widths else width,)
-                    + (self._candidate_width,) * (source.max_tokens - 1)
-                    if self._candidate_width is not None
-                    and (options.dynamic_beam_widths or self._candidate_width != width)
-                    and str(device).split(":")[0] == "cuda"
-                    else None
+                    tuple(options.per_parent_beam_widths)
+                    or (
+                        (options.dynamic_beam_widths[0] if options.dynamic_beam_widths else width,)
+                        + (self._candidate_width,) * (source.max_tokens - 1)
+                        if self._candidate_width is not None
+                        and (options.dynamic_beam_widths or self._candidate_width != width)
+                        and str(device).split(":")[0] == "cuda"
+                        else None
+                    )
                 ),
             )
             output = BeamOutputOptions(

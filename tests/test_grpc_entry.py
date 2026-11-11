@@ -122,15 +122,16 @@ def test_full_request_to_numpy_batch(binary: bool) -> None:
 
 
 @pytest.mark.parametrize(
-    "width,widths,expected",
+    "width,widths,expected,explicit",
     [
-        (1024, [256, 512, 1024], (256, 256, 256)),
-        (1024, [64, 512, 1024], (64, 256, 256)),
-        (2, [], (2, 256, 256)),
+        (1024, [256, 512, 1024], (256, 256, 256), []),
+        (1024, [64, 512, 1024], (64, 256, 256), []),
+        (2, [], (2, 256, 256), []),
+        (1024, [256, 512, 1024], (256, 128, 64), [256, 128, 64]),
     ],
 )
 def test_configured_candidate_width_supports_beam_geometry(
-    width: int, widths: list[int], expected: tuple[int, ...]
+    width: int, widths: list[int], expected: tuple[int, ...], explicit: list[int]
 ) -> None:
     from vllm_gr.config import BeamExecutionMode, ConstraintTableConfig, GRConfig
     from vllm_gr.config.parser import gr_config_to_mapping
@@ -149,11 +150,55 @@ def test_configured_candidate_width_supports_beam_geometry(
     value.sampling_params.n = width
     value.beam_search.beam_width = width
     value.beam_search.dynamic_beam_widths.extend(widths)
+    value.beam_search.per_parent_beam_widths.extend(explicit)
     value.beam_search.result_width = min(width, 1000)
     batch, _ = servicer.build_batch([value])
     assert batch.beam_params.candidate_width == 256
     assert batch.beam_params.per_parent_beam_widths == expected
     assert batch.output_options.num_return_sequences == min(width, 1000)
+
+
+@pytest.mark.parametrize("expansions", [[2, 2], [1, 2, 1], [2, 1, 1], [2, 0, 1], [2, 257, 1]])
+def test_invalid_per_parent_beam_widths_are_rejected(expansions: list[int]) -> None:
+    value = message()
+    value.sampling_params.n = 4
+    value.beam_search.beam_width = 4
+    value.beam_search.dynamic_beam_widths.extend([2, 4, 4])
+    value.beam_search.per_parent_beam_widths.extend(expansions)
+    with pytest.raises(ValueError):
+        BeamVllmEngineServicer(engine(), 0.0).build_batch([value])
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_per_parent_beam_widths_cross_actual_grpc(binary: bool) -> None:
+    async def run() -> None:
+        async with connection() as (stub, _, submitted, _):
+            value = message(binary=binary)
+            value.sampling_params.n = 4
+            value.beam_search.beam_width = 4
+            value.beam_search.dynamic_beam_widths.extend([2, 4, 4])
+            value.beam_search.per_parent_beam_widths.extend([2, 2, 1])
+            response = await stub.GenerateBatch(
+                pb.BatchGenerateRequest(requests=[value]), timeout=5
+            )
+            assert submitted[0].beam_params.per_parent_beam_widths == (2, 2, 1)
+            # The observable fake backend returns a fixed pair independently
+            # of the request's Beam budget; its wire output stays unchanged.
+            assert list(response.items[0].beams.output_offsets) == [0, 3, 4]
+            assert list(response.items[0].beams.output_ids) == [1, 2, 3, 4]
+
+    asyncio.run(run())
+
+
+def test_batch_members_must_share_per_parent_beam_widths() -> None:
+    values = [message(0), message(1)]
+    for index, value in enumerate(values):
+        value.sampling_params.n = 4
+        value.beam_search.beam_width = 4
+        value.beam_search.dynamic_beam_widths.extend([2, 4, 4])
+        value.beam_search.per_parent_beam_widths.extend([2, 2, index + 1])
+    with pytest.raises(ValueError, match="identical beam/output options"):
+        BeamVllmEngineServicer(engine(), 0.0).build_batch(values)
 
 
 @pytest.mark.parametrize("binary", [False, True])  # type: ignore[misc]

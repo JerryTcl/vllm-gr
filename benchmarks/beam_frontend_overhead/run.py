@@ -23,7 +23,7 @@ sys.path.insert(0, str(REPO))
 
 import grpc
 import numpy as np
-from assets import VOCAB, WIDTHS, prepare
+from assets import PER_PARENT_WIDTHS, VOCAB, WIDTHS, prepare
 
 from vllm_gr.entrypoints.grpc.generated import vllm_engine_pb2 as pb
 from vllm_gr.entrypoints.grpc.generated import vllm_engine_pb2_grpc as rpc
@@ -79,6 +79,7 @@ def request(length, batch, count, binary):
                 beam_search=pb.BeamSearchOptions(
                     beam_width=1024,
                     dynamic_beam_widths=WIDTHS,
+                    per_parent_beam_widths=PER_PARENT_WIDTHS,
                     result_width=count,
                     length_penalty=0.0,
                 ),
@@ -108,7 +109,7 @@ def main():
     parser.add_argument("--tiny", action="store_true", help="Two standard layers for a quick smoke")
     parser.add_argument("--lengths", type=integers, default=[65, 4097])
     parser.add_argument("--batches", type=integers, default=[1, 4])
-    parser.add_argument("--result-widths", type=integers, default=[64, 1000])
+    parser.add_argument("--result-widths", type=integers, default=[1000])
     parser.add_argument("--formats", default="default,binary")
     parser.add_argument("--samples", type=int, default=300)
     parser.add_argument("--control-samples", type=int, default=100)
@@ -157,11 +158,11 @@ def main():
         "--dtype",
         "bfloat16",
         "--max-model-len",
-        str(max(args.lengths) + 3),
+        str(max(4100, max(args.lengths) + 3)),
         "--max-num-batched-tokens",
-        str(max(4096, 4 * max(args.lengths))),
+        str(max(16388, 4 * max(args.lengths))),
         "--max-num-seqs",
-        str(max(args.batches)),
+        "4",
         "--max-logprobs",
         "256",
         "--no-enable-prefix-caching",
@@ -194,8 +195,16 @@ def main():
         dtype="bfloat16",
         prefix_cache=False,
         measurement="Full RPC return E2E; six CUDA intervals Forward; Outside = E2E - Forward",
-        max_num_seqs=max(args.batches),
+        max_num_seqs=4,
         length_penalty=0.0,
+        beam_params=dict(
+            beam_width=1024,
+            dynamic_beam_widths=WIDTHS,
+            per_parent_beam_widths=PER_PARENT_WIDTHS,
+            max_tokens=3,
+            ignore_eos=True,
+            length_penalty=0.0,
+        ),
         command=command,
         versions={
             name: importlib.metadata.version(name)
@@ -277,6 +286,10 @@ def main():
                                 "Expected one Worker and one six-interval row per RPC"
                             )
                         for sample, events in zip(samples, workers[0], strict=True):
+                            if events["per_parent_beam_widths"] != PER_PARENT_WIDTHS:
+                                raise RuntimeError(
+                                    "Worker received the wrong per-parent K schedule"
+                                )
                             segments = events["segments"]
                             gpu = sum(s["ms"] for s in segments)
                             sample.update(

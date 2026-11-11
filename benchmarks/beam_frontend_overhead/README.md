@@ -11,12 +11,13 @@ three generic changes proposed in upstream PRs
 optional binary replies, constrained partial TopK, and Decode graph reuse across
 batch sizes. The remaining code is a standalone benchmark.
 
-One additional generic gRPC fix forwards the configured candidate width into
-the Beam request. CUDA geometry is expressed as an initial expansion matching
-the first retained width, followed by the configured per-parent K. This allows
-the large dynamic Beam request below to pass admission without adding fields
-to the protobuf schema. The original `main` conversion left K unset and rejected
-`beam_width=1024` before execution.
+Additional generic gRPC plumbing forwards the configured candidate width and
+the optional `BeamSearchOptions.per_parent_beam_widths` schedule into the existing
+Beam request. The repeated protobuf field is appended at number 7; existing
+field numbers are preserved. Empty schedules retain engine defaults. Explicit
+schedules are CUDA-only and use the shared Beam contract's existing validation.
+The original `main` conversion left K unset and rejected `beam_width=1024`
+before execution.
 
 The benchmark generates a standard Qwen3 Dense or Qwen3 MoE configuration, an
 integer-only synthetic three-token catalog, and deterministic random prompt IDs.
@@ -68,15 +69,18 @@ Increase `--startup-timeout` if first-use JIT compilation takes longer. Adjust
   frontend, native EngineCore IPC, scheduler, CUDA Worker, constrained Beam
   search, terminal output, and gRPC reply.
 - One explicit batch is in flight. No separate batcher or proxy is involved.
-- Native `max_num_seqs` equals the largest requested input batch (four for the
-  default B1/B4 run). GR owns Decode Beam expansion; it is not counted as
+- Native `max_num_seqs=4` supports B1/B4 requests. GR owns Decode Beam expansion;
+  it is not counted as
   thousands of native input requests. `length_penalty=0` is explicit.
 - BF16, TP=PP=1, no quantization, prefix caching off. In-request KV remains
   necessary for Attention. No result-cache layer is added.
-- Three generated tokens, `W=[256,512,1024]`, Beam capacity 1024, and configurable
-  final `result_width`. The current public gRPC interface uses the engine's
-  `constraint_table.candidate_width=256` at each stage. It does not expose
-  stage-specific per-parent K in the protocol.
+- Three generated tokens, `W=[256,512,1024]`, per-parent `K=[256,128,64]`, Beam
+  capacity 1024 and default `result_width=1000`. `ignore_eos=true` and
+  `length_penalty=0`. `constraint_table.candidate_width=256` and `max_top_k=256`
+  reserve the maximum K; they do not force every stage to expand 256 candidates.
+- Service capacities are `max_model_len=4100` and `max_num_batched_tokens=16388`
+  for the 65/4097-token cases, including short-input-only runs. Longer optional
+  prompts raise these two limits as needed.
 - The catalog has 256 first tokens, 32 second tokens per prefix, and normally
   128 final tokens. One final row has 8192 candidates. This produces a large
   candidate work capacity without a large artifact or external data.

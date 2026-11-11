@@ -363,6 +363,8 @@ message BeamSearchOptions {
   optional double length_penalty = 4;
   string constraint_resource_id = 5;
   bool include_parent_beam_indices = 6;
+  // Optional CUDA per-stage candidates per parent. Empty retains engine defaults.
+  repeated uint32 per_parent_beam_widths = 7;
 }
 message BatchGenerateRequest {
   string batch_id = 1;

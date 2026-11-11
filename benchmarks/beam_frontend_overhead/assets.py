@@ -14,6 +14,7 @@ from vllm_gr.constraints.table import ConstraintTable, ConstraintTableMetadata
 
 VOCAB = 8192
 WIDTHS = [256, 512, 1024]
+PER_PARENT_WIDTHS = [256, 128, 64]
 
 
 def prepare(folder: Path, architecture: str, tiny: bool) -> dict:

@@ -28,6 +28,13 @@ through Engine Core and Worker staging. The code baseline is `decode_graph`.
   into Beam parameters. CUDA requests with independent K/W use the first
   retained width for their initial expansion, followed by the configured K.
   This supports large dynamic Beams without adding protobuf request fields.
+- `BeamSearchOptions.per_parent_beam_widths` optionally supplies one CUDA
+  per-parent expansion width per generation stage. It overrides the engine's
+  default K schedule, while the configured candidate width remains the reserved
+  capacity. Empty lists preserve defaults. Shared Beam validation checks stage
+  count, limits, initial width and candidate-pool reachability before dispatch;
+  members of one batch must use the same schedule. NPU rejects this optional
+  field until that execution path supports it.
 - `GenerateRequest.trie_id` selects a Trie for each input; omitted selects Trie 0.
   `GenerateBatch` members can select different Tries while sharing beam/output
   options. Multi-Trie execution requires CUDA and a multi-Trie constraint table;

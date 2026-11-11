@@ -62,7 +62,11 @@ def _install():
         if metadata is None:
             return execute(self, scheduled, *args, **kwargs)
         if metadata.stage_index == 0 and _ENABLED:
-            _ACTIVE = dict(session_id=metadata.session_id, events=[])
+            _ACTIVE = dict(
+                session_id=metadata.session_id,
+                events=[],
+                per_parent_beam_widths=list(metadata.beam_params.per_parent_beam_widths or ()),
+            )
         self._frontend_probe_stage = metadata.stage_index
         return timed(
             "execute", metadata.stage_index, lambda: execute(self, scheduled, *args, **kwargs)
@@ -122,6 +126,12 @@ class WorkerExtension:
             for stage, kind, start, end in events:
                 segments.append(dict(stage=stage, kind=kind, ms=start.elapsed_time(end)))
                 _POOL.extend((start, end))
-            rows.append(dict(session_id=state["session_id"], segments=segments))
+            rows.append(
+                dict(
+                    session_id=state["session_id"],
+                    segments=segments,
+                    per_parent_beam_widths=state["per_parent_beam_widths"],
+                )
+            )
         _PENDING.clear()
         return rows
