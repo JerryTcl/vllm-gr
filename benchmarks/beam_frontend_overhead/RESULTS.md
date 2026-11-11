@@ -123,3 +123,35 @@ by subtracting aggregate statistics.
 Additional validation: 115 host gRPC/columnar tests, 116 CUDA constrained-TopK
 and batch-switch graph tests, protobuf consistency, and targeted static checks
 passed. Full repository CI and NPU model validation were not run.
+
+## Independent restart confirmation
+
+An independent server restart at `b950c66ba88f` re-ran the long B4
+case: 4097 tokens per input, 1000 returned sequences, W=[256,512,1024],
+K=[256,128,64]. Model configuration, catalog digest, runtime versions, native
+capacities and timing boundaries match the earlier run. Runtime/benchmark
+code is identical between the two recorded revisions; intervening changes
+were documentation only. The restart checks this subset directly after
+warmup, rather than repeating all earlier short/B1 cases first.
+
+Each output mode has 300 paired calls and 100 probe-disabled controls.
+No samples are discarded or pooled across starts. Each value is mean / P99
+in milliseconds.
+
+| Start | Output format | Outside | Pure Forward | E2E |
+| --- | --- | --- | --- | --- |
+| Original | default | 5.87 / 7.53 | 70.27 / 70.78 | 76.14 / 77.71 |
+| Original | binary | 4.21 / 5.70 | 70.34 / 70.68 | 74.55 / 75.98 |
+| Restart | default | 5.11 / 6.11 | 70.20 / 70.78 | 75.30 / 76.42 |
+| Restart | binary | 3.76 / 4.82 | 70.15 / 70.57 | 73.91 / 75.23 |
+
+Both restart cells had zero measured captures and 600 Decode graph replays.
+Repeated requests and default/binary output checks passed. The residual
+outside time is reproduced without a model adapter or repeated graph capture.
+
+```bash
+OMP_NUM_THREADS=1 python benchmarks/beam_frontend_overhead/run.py \
+  --output ./benchmark-output/restart-confirmation \
+  --architecture moe --lengths 4097 --batches 4 --result-widths 1000 \
+  --samples 300 --control-samples 100 --warmup 5
+```
