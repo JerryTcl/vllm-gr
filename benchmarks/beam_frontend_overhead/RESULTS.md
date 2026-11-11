@@ -1,65 +1,99 @@
-# Local validation example
+# Public-model serving measurements
 
-This is one independent H20 start on code revision `a85136ae461f`.
-All measurements report arithmetic mean and P99 in milliseconds. Every sample,
-including slow calls, is retained. P99 uses linear percentile interpolation.
-This finite-sample diagnostic is not a production latency target or SLO.
+One independent H20 start on code revision `8807861f9f1c`.
+Each timing cell is arithmetic mean / P99 in milliseconds. All samples,
+including slow requests, are retained. P99 uses linear interpolation; 300
+samples per cell provide a finite-sample diagnostic, not a production SLO.
 
-## Configuration
+## Timing definitions
 
-- Standard `Qwen3MoeForCausalLM`, locally initialized dummy weights.
-- 12 layers, hidden size 1024, 32 experts, four selected per token, BF16.
-- Synthetic integer vocabulary/catalog; one explicit B4 request at a time.
-- Eager Prefill and warmed GR Decode CUDA Graphs, no quantization or prefix cache.
-- W=[256,512,1024], per-parent K=[256,256,256], final result count 64 or 1000.
-- Default Python GC; `OMP_NUM_THREADS=1`; no serving-heap changes.
+| Metric | Definition |
+| --- | --- |
+| Pure Forward | Sum of six CUDA Events intervals: three model executions plus three Trie/TopK/Beam selections. Includes input preparation, LM head and idle gaps inside each interval; excludes gaps between them. |
+| E2E | Client RPC call start through complete response return, including protobuf encoding/decoding and transport. Excludes request construction and business/array conversion after return. |
+| Outside | E2E minus Pure Forward for the same request. Includes interval-external request handling, IPC, result handling, communication and gaps between the six intervals. |
+
+Outside P99 is calculated from the paired per-request differences. It is not
+`P99(E2E) - P99(Forward)`. Outside time must not be called pure frontend time.
+
+## Workload and configuration
+
+- Standard `Qwen3MoeForCausalLM`, dummy weights: 12 layers, hidden size 1024,
+  32 experts, four selected per token, BF16, no quantization.
+- Deterministic synthetic token IDs and integer-only three-token Trie.
+  65/4097 are token counts per input; they do not encode item-feature history.
+- Explicit gRPC GenerateBatch, B1/B4; one RPC batch in flight.
+- Fixed 1000 returned sequences per input, each with three generated tokens.
+- W=[256,512,1024], per-parent K=[256,256,256], length_penalty=0.
+- Native max_num_seqs=4; GR manages Decode Beam fanout. max_model_len=4100,
+  max_num_batched_tokens=16388. Prefix caching is disabled; no result cache.
+- Eager Prefill and GR Decode CUDA Graph replay; normal Python GC,
+  OMP_NUM_THREADS=1. All three generic optimizations remain enabled.
 - vLLM 0.30.0, Torch 2.13.0+cu130, grpcio 1.85.1, protobuf 7.36.2.
-- 300 paired calls and 100 separate probe-off calls per cell: 2400 paired calls total.
-- Every cell recorded zero measured captures and 600 Decode graph replays.
-- Repeated requests and default/binary replies matched token IDs and FP32 scores.
+- Each cell: 300 paired calls, 100 separate probe-disabled controls, five
+  excluded warmups. 2400 paired calls total; zero measured captures and
+  600 Decode graph replays per cell. Repeated/default/binary token IDs and
+  FP32 scores matched.
 
-## Mean / P99 (milliseconds)
+## Default gRPC output
 
-Each timing cell below is `mean / P99`. Probe-off statistics use their own
-100 samples; the other columns use 300 paired samples per configuration.
+| Input tokens / Batch | Outside | Pure Forward | E2E |
+| --- | --- | --- | --- |
+| 65 / B1 | 2.25 / 2.76 | 9.76 / 10.62 | 12.01 / 13.37 |
+| 65 / B4 | 4.29 / 5.07 | 18.88 / 19.21 | 23.17 / 23.99 |
+| 4097 / B1 | 2.53 / 3.02 | 22.14 / 22.59 | 24.67 / 25.28 |
+| 4097 / B4 | 5.40 / 6.39 | 71.14 / 71.60 | 76.54 / 77.72 |
 
-| Prompt tokens | Batch | Results/input | Wire | RPC through arrays | Worker stage intervals | Outside stages | Probe-off RPC |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 65 | 4 | 64 | default | 21.83 / 23.42 | 18.90 / 19.96 | 2.93 / 3.93 | 21.75 / 22.19 |
-| 65 | 4 | 64 | binary | 21.53 / 22.65 | 18.87 / 19.25 | 2.65 / 3.02 | 21.44 / 21.78 |
-| 65 | 4 | 1000 | default | 23.22 / 24.86 | 18.93 / 19.73 | 4.29 / 5.26 | 23.33 / 26.34 |
-| 65 | 4 | 1000 | binary | 21.90 / 23.43 | 18.93 / 20.04 | 2.97 / 4.04 | 21.71 / 22.89 |
-| 4097 | 4 | 64 | default | 74.76 / 75.92 | 71.06 / 71.49 | 3.70 / 4.52 | 74.74 / 76.33 |
-| 4097 | 4 | 64 | binary | 74.72 / 76.11 | 71.08 / 71.47 | 3.64 / 4.80 | 74.50 / 75.07 |
-| 4097 | 4 | 1000 | default | 76.34 / 77.61 | 71.12 / 71.99 | 5.22 / 6.24 | 76.42 / 77.39 |
-| 4097 | 4 | 1000 | binary | 75.07 / 76.37 | 71.17 / 71.44 | 3.91 / 4.71 | 74.63 / 74.94 |
+## Optional binary gRPC output
 
-Outside-stage mean and P99 are calculated from each request's paired
-`RPC - sum(Worker intervals)` difference. P99 values are not additive:
-`P99(RPC) - P99(Worker)` does not equal the outside-stage P99.
+| Input tokens / Batch | Outside | Pure Forward | E2E |
+| --- | --- | --- | --- |
+| 65 / B1 | 1.93 / 2.53 | 9.74 / 10.10 | 11.67 / 12.52 |
+| 65 / B4 | 2.93 / 3.56 | 18.95 / 20.80 | 21.88 / 24.21 |
+| 4097 / B1 | 2.32 / 2.82 | 22.16 / 22.47 | 24.48 / 25.22 |
+| 4097 / B4 | 3.72 / 4.40 | 71.06 / 71.44 | 74.77 / 75.66 |
 
-The residual remains visible with all three generic optimizations present,
-using only the standard model path and generated assets. CUDA intervals include
-model/logits and selection, and may include launch gaps inside a stage. The
-residual includes frontend, IPC, EngineCore/Worker host work between stages,
-output transfer, transport and client conversion. It is not pure frontend time
-and is not a cross-framework comparison.
+These standard-model measurements demonstrate residual outside time; they
+are not an equal-model or equal-catalog comparison against another framework.
+The metric boundaries above are independent of the generated model and data.
 
-## Reproduce this configuration
+## Reproduce
 
 ```bash
 OMP_NUM_THREADS=1 python benchmarks/beam_frontend_overhead/run.py \
   --output ./benchmark-output/validation \
-  --architecture moe --lengths 65,4097 --batches 4 \
-  --result-widths 64,1000 --samples 300 --control-samples 100 --warmup 5
+  --architecture moe --lengths 65,4097 --batches 1,4 \
+  --result-widths 1000 --samples 300 --control-samples 100 --warmup 5
 ```
 
-`summary.json` records raw paired samples, environment, exact command, output
-hashes, means and P99 values. `metrics.csv` has explicit `_mean_ms` and `_p99_ms`
-columns. Repeat in fresh output directories for independent-start variance.
-Dense-model and compiled-Prefill options were not exercised by this run.
+`summary.json` retains all raw samples; `metrics.csv` contains E2E, Forward
+and Outside means/P99 values. Use fresh directories for independent starts.
+Dense models and compiled-Prefill mode were not exercised by this run.
 
-Additional checks: 106 host gRPC/columnar tests, 116 CUDA constrained-TopK and
-batch-switch graph tests, protobuf regeneration consistency, and targeted
-formatting/documentation checks passed. The full repository test suite and
-NPU model validation were not run.
+## Auxiliary diagnostics
+
+This appendix is not another set of business performance metrics. Post-RPC
+array conversion/validation is outside E2E. Array-ready time includes it.
+Probe-disabled RPCs check timing-observer effects; they have no paired Forward
+measurement. Conversion/array-ready values use 300 calls; probe-disabled values
+use their own 100 calls. Each cell below is mean / P99 in milliseconds.
+
+| Input tokens / Batch | Output format | Post-RPC conversion | Array-ready time | RPC without timing probe |
+| --- | --- | --- | --- | --- |
+| 65 / B1 | default | 0.03 / 0.08 | 12.04 / 13.42 | 11.95 / 12.54 |
+| 65 / B1 | binary | 0.02 / 0.05 | 11.69 / 12.54 | 11.63 / 12.75 |
+| 65 / B4 | default | 0.08 / 0.14 | 23.24 / 24.09 | 23.12 / 24.05 |
+| 65 / B4 | binary | 0.04 / 0.09 | 21.92 / 24.26 | 21.79 / 24.27 |
+| 4097 / B1 | default | 0.03 / 0.07 | 24.70 / 25.32 | 24.70 / 25.44 |
+| 4097 / B1 | binary | 0.03 / 0.06 | 24.51 / 25.25 | 24.41 / 25.03 |
+| 4097 / B4 | default | 0.10 / 0.14 | 76.64 / 77.88 | 76.41 / 76.95 |
+| 4097 / B4 | binary | 0.06 / 0.08 | 74.83 / 75.72 | 74.80 / 75.63 |
+
+Previous tables labelled RPC through arrays included post-RPC conversion and
+used native max_num_seqs=4096. They remain in the original experiment outputs;
+the corrected boundary/configuration above was measured again, not inferred
+by subtracting aggregate statistics.
+
+Additional validation: 106 host gRPC/columnar tests, 116 CUDA constrained-TopK
+and batch-switch graph tests, protobuf consistency, and targeted static checks
+passed. Full repository CI and NPU model validation were not run.
