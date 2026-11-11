@@ -109,8 +109,8 @@ def main():
     parser.add_argument("--batches", type=integers, default=[1, 4])
     parser.add_argument("--result-widths", type=integers, default=[64, 1000])
     parser.add_argument("--formats", default="default,binary")
-    parser.add_argument("--samples", type=int, default=50)
-    parser.add_argument("--control-samples", type=int, default=10)
+    parser.add_argument("--samples", type=int, default=300)
+    parser.add_argument("--control-samples", type=int, default=100)
     parser.add_argument("--warmup", type=int, default=8)
     parser.add_argument("--prefill-mode", choices=("eager", "compiled"), default="eager")
     parser.add_argument("--startup-timeout", type=float, default=900)
@@ -283,6 +283,11 @@ def main():
                             for k in ("rpc_ready_ms", "gpu_stage_ms", "outside_stage_ms")
                         }
                         means["probe_off_rpc_ms"] = statistics.mean(off)
+                        p99s = {
+                            k: float(np.percentile([s[k] for s in samples], 99, method="linear"))
+                            for k in ("rpc_ready_ms", "gpu_stage_ms", "outside_stage_ms")
+                        }
+                        p99s["probe_off_rpc_ms"] = float(np.percentile(off, 99, method="linear"))
                         report["cells"].append(
                             dict(
                                 tag=tag,
@@ -291,17 +296,28 @@ def main():
                                 result_width=count,
                                 wire=wire,
                                 means=means,
+                                p99s=p99s,
                                 output_sha256=observed,
                                 probe_off_samples_ms=off,
                                 graph_delta=graph_delta,
                             )
                         )
                         report["samples"].extend(samples)
-                        print(tag, json.dumps(means), flush=True)
+                        print(tag, json.dumps(dict(mean=means, p99=p99s)), flush=True)
                         (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
         report["status"] = "passed"
-        with (output / "means.csv").open("w") as stream:
-            rows = [dict(cell=c["tag"], **c["means"]) for c in report["cells"]]
+        with (output / "metrics.csv").open("w") as stream:
+            rows = [
+                dict(
+                    cell=c["tag"],
+                    **{
+                        f"{key.removesuffix('_ms')}_{stat}_ms": value
+                        for stat, field in (("mean", "means"), ("p99", "p99s"))
+                        for key, value in c[field].items()
+                    },
+                )
+                for c in report["cells"]
+            ]
             writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
             writer.writeheader()
             writer.writerows(rows)
