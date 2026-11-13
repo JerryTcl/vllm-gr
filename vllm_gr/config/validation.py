@@ -376,3 +376,9 @@ def validate_beam_max_decode_steps(value: object) -> int:
         value if value is not None else _BEAM_MAX_DECODE_STEPS_DEFAULT,
         "beam_max_decode_steps",
     )
+
+
+def validate_enable_full_step_graph(value: object) -> bool:
+    if type(value) is not bool:
+        raise TypeError("beam.enable_full_step_graph must be a boolean")
+    return value
