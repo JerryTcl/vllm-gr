@@ -105,7 +105,7 @@ containing a hardware predicate or device-type comparison.
 | `v1/worker/gr_startup.py:64-69` | Beam graph capture selection |
 | `v1/worker/prefill_graph_runner.py:54` | Prefill graph runner class selection |
 | `v1/attention/backends/beam_attn_metadata.py:344-346` | Caches `_is_cuda` / `_is_npu` from `device.type` |
-| `v1/beam/beam_decision.py:108,600,635,647,695` | Decision and operator-path selection |
+| `v1/beam/beam_decision.py:108,600,635,647,695` | Decision and operator-path selection; the path choice belongs to the runner adapter or stage service |
 | `engine/arg_utils_gr.py:355,383,392` | Default pinning for NPU/CUDA |
 | `entrypoints/beam_search_v1/input_processor.py:177-181` | Constraint table backend default |
 | `v1/npu_kv_layout.py:200` | KV layout policy gate |
@@ -199,7 +199,15 @@ every vendor runtime, because `current_platform` is already an instance: reading
 `type()` and `__module__` costs no import and keeps the existing
 `tests/platforms/test_import_isolation.py` guarantee. Out-of-tree providers must
 match an explicit vendor identity; the generic `OOT` enum or a shared tensor device
-type is insufficient. Unknown subclasses are rejected unless explicitly supported.
+type is insufficient. Unknown subclasses are rejected by `matches()`, not by a
+table in core.
+
+Core holds no hardware identity allowlist. `matches()` is the only place a
+platform identity is accepted or rejected. Core validates structural correctness,
+API version and declared version ranges; it must not carry a table of known
+platform classes, device names or vendor packages that a new backend would have to
+extend. Adding a backend means registering a provider, never editing an identity
+table under `platforms/`.
 
 | Upstream platform | Tensor device type | GR backend ID | Matching requirement |
 | --- | --- | --- | --- |
@@ -341,11 +349,20 @@ they are not part of API version 2:
 
 | Service | Contract boundary | Initial implementations |
 | --- | --- | --- |
-| Runner adapter | Attach to the selected native lifecycle, translate inputs/outputs, preserve native fallback | CUDA V1, CUDA V2, Ascend runner |
+| Runner adapter | Attach to the selected native lifecycle, translate inputs/outputs, preserve native fallback; own device operator-path selection | CUDA V1, CUDA V2, Ascend runner |
 | Stage executor | Execute and sample GR stages; preserve error propagation and retirement acknowledgments | Existing GPU/NPU stage runners |
-| Attention executor | Prepare device metadata, write KV, run Prefill/Decode using shared logical Beam metadata | CUDA, Ascend cascade/xllm with separate Prefill handling |
+| Attention executor | Prepare device metadata, write KV, run Prefill/Decode using shared logical Beam metadata, and own admissibility of an attention configuration | CUDA, Ascend cascade/xllm with separate Prefill handling |
 | Graph executor | Validate capture shapes, capture/replay, report actual execution, invalidate and close | CUDA Graph and Ascend ACL Graph adapters |
-| Constraint execution | Preserve canonical tokens, scores, validity and resource identity | Existing constrained Top-K implementations |
+| Constraint execution | Preserve canonical tokens, scores, validity and resource identity; declare its `implementation_id` | Existing constrained Top-K implementations |
+
+Two ownership rules follow from this table and are easy to get wrong:
+
+- Admissibility is a backend responsibility. Quality-of-support questions — KV
+  cache dtype, sinks, block size, Beam width, graph shape — are answered by plan
+  validation and the owning service, never by a shared class testing a device name.
+- Device operator-path selection (`v1/beam/beam_decision.py`) belongs to the runner
+  adapter or stage service, which already holds the plan. Shared Beam decision
+  logic consumes the chosen path.
 
 Runner translation may need both `execute_model` and `sample_tokens`; do not
 collapse the native asynchronous lifecycle into a synchronous `run()` call.
@@ -856,6 +873,35 @@ The migration is complete when:
    graph policy, initialization failures, and eager fallback reasons without
    adding discovery or device synchronization to the per-token hot path.
 6. The boundary lint is enforced and its exception list is empty or shrinking.
+7. Core holds no hardware identity allowlist, and shared code contains no
+   device-name admissibility or device-name operator-path selection.
+8. Every criterion above names the test or artifact that demonstrates it.
+
+### Change boundary for a new backend
+
+The table below is the testable form of "adding hardware only requires
+hardware-specific work". The left column is what a new backend may add or edit.
+The right column is shared code that a new backend must not need to touch.
+
+| May be added or changed | Must not be required to change |
+| --- | --- |
+| The provider object (`backend_id`, `api_version`, `matches`, `resolve`, factories) | `vllm_gr/platforms/registry.py`, `loader.py`, `plan.py` |
+| The runner adapter, including composed stage and graph services | Selection branches in `v1/worker/gr_execution.py`, `gr_startup.py`, `prefill_graph_runner.py`, `model_runner_patch.py` |
+| The attention executor and its configuration validation | Device-name admissibility and platform constants in `v1/attention/backends/beam_attn.py`; device flags in `beam_attn_metadata.py` |
+| The constraint implementation and its `implementation_id` | `ConstraintTableBackendEnum` membership in `config/models.py`; branches in `constraints/startup.py`, `constraints/loader.py` |
+| A device operator package | Operator-path branch in `v1/beam/beam_decision.py` |
+| The graph executor | Frontend constraint selection in `entrypoints/beam_search_v1/input_processor.py` |
+| Typed options, combination table, plan encoding | Platform branch in `_env_check.py`; per-platform default pinning in `engine/arg_utils_gr.py` |
+
+A proposed backend that finds itself editing the right column indicates a missing
+contract. The correct response is to extend the RFC, not to add another branch.
+
+### Limit of host-only conformance
+
+The out-of-tree fixture proves interface extensibility, not semantic portability.
+CUDA-specific assumptions such as kernel behaviour, graph capture rules and memory
+layout surface only on real hardware. Passing conformance does not advertise any
+additional accelerator as production-ready.
 
 ## Review findings and dispositions
 
@@ -877,6 +923,8 @@ Rows 2 and 9 record corrections to this document's own claims, not to the code.
 | 11 | `resolve()` was not required to be pure, yet plugin registration re-runs per `EngineArgs` round-trip | Accepted: purity and memoization constraints added to the plan contract |
 | 12 | Patch ownership required every active patch to be claimed by a provider | **Corrected**: `scope: core` entries stay with core; only backend-scoped entries name a provider, and evaluation happens after selection |
 | 13 | The contract implied the existing method set was retained unchanged | **Corrected**: a signature-change table lists every renamed method and gained argument |
+| 14 | A core identity allowlist could force a new backend to edit core | Accepted: `matches()` is the only acceptance point; core carries no allowlist |
+| 15 | Capability admissibility and operator-path selection stayed in shared code | Accepted: admissibility moves to the plan and attention executor; operator-path choice moves to the runner adapter or stage service |
 
 ## Alignment with the design RFC
 
@@ -885,13 +933,17 @@ decision record; this document is the detailed design it references. Where the t
 differ, the RFC governs. The RFC asks that this document reconcile five points, all
 addressed above:
 
-| RFC point | Where this document answers it |
+| Point | Where this document answers it |
 | --- | --- |
 | Provider signatures | [Provider contract](#provider-contract), including the signature-change table and plan-bound factories |
 | Metadata references | `provider.backend_id` and `provider.api_version`; no `provider.descriptor` |
 | Protocol explanation | [Protocol conformance is structural](#protocol-conformance-is-structural) |
 | Patch ownership rule | [Machine-readable patch ownership](#machine-readable-patch-ownership), with `scope` and post-selection evaluation |
 | Stage exit conditions | [Migration plan](#migration-plan), seven stages |
+| No core identity allowlist | [Backend identity and deterministic selection](#backend-identity-and-deterministic-selection) |
+| Backend-owned admissibility and operator paths | [Execution services](#execution-services) and [change boundary](#change-boundary-for-a-new-backend) |
+| Constraint implementation identity | [Retiring the constraint backend enum](#retiring-the-constraint-backend-enum) |
+| Change boundary for a new backend | [Change boundary for a new backend](#change-boundary-for-a-new-backend) |
 
 The RFC also fixes a feedback period of at least one week before the API-v2 contract
 is frozen, so the signatures above are proposals pending that discussion rather than
