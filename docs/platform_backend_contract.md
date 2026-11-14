@@ -8,11 +8,17 @@ binds an exact canonical vLLM `device_type` to ModelRunner patch hooks,
 Beam Attention execution primitives, environment validation, and any
 platform-specific compatibility patches.
 
-Production startup already uses provider activation, environment validation,
-runtime compatibility patches, and the constrained TopK execution factory.
-The worker and attention dispatchers still select their implementations
-directly; the two provider getters describe available modules but do not
-replace those dispatchers.
+The constraint startup path uses provider activation and the constrained TopK
+execution factory. General runtime initialization still selects environment
+checks in `_env_check.py` and invokes compatibility patches directly from
+`patch.py`; it does not route those responsibilities through provider methods.
+The worker and attention dispatchers also select their implementations directly;
+the two provider getters describe available modules but do not replace those
+dispatchers.
+
+The [multi-hardware design proposal](multi_backend_design.md) describes a future
+versioned backend identity and execution boundary. Its proposed interfaces and
+configuration are not part of the current contract below.
 
 ## Lifecycle and process model
 
