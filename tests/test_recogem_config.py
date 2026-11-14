@@ -71,3 +71,30 @@ def test_precision_is_only_changed_by_explicit_switch(monkeypatch: pytest.Monkey
     finally:
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = previous
         request.undo()
+
+
+@pytest.mark.parametrize("enabled", [False, True])  # type: ignore[misc]
+def test_streaming_head_config_roundtrip(enabled: bool) -> None:
+    config = GRConfig(
+        enable_streaming_constrained_head=enabled,
+        constraint_table=ConstraintTableConfig(max_top_k=128),
+    )
+    assert (
+        gr_config_from_mapping(gr_config_to_mapping(config)).enable_streaming_constrained_head
+        is enabled
+    )
+    engine = SimpleNamespace(additional_config={})
+    write_gr_config(engine, GRConfig(enable_streaming_constrained_head=enabled))
+    assert parse_gr_config(engine).enable_streaming_constrained_head is enabled
+    parser = argparse.ArgumentParser()
+    add_recogem_arguments(parser)
+    args = parser.parse_args(
+        ["--streaming-constrained-head" if enabled else "--no-streaming-constrained-head"]
+    )
+    assert beam_optimization_config(args).get("enable_streaming_constrained_head", False) is enabled
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "true"])  # type: ignore[misc]
+def test_streaming_head_rejects_non_boolean(value: object) -> None:
+    with pytest.raises(TypeError, match="enable_streaming_constrained_head must be a boolean"):
+        GRConfig(enable_streaming_constrained_head=cast(Any, value))

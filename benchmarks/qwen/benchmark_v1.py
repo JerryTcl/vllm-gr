@@ -610,6 +610,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         engine_kwargs["profiler_config"] = _profiler_config(args, timeline_trace_dir)
 
     timeline_run = None
+    memory = None
     try:
         with GRLLM(**engine_kwargs) as llm:
             for _ in range(args.warmup_runs):
@@ -621,6 +622,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     beam_steps=args.beam_steps,
                     record_outputs=False,
                 )
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
             measured = [
                 _run_once(
                     llm,
@@ -632,6 +635,12 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 for _ in range(args.repeat)
             ]
+            if torch.cuda.is_available():
+                memory = {
+                    "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
+                    "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
+                    "scope": "post-warmup inference, including model, KV and captured graphs; excludes profiler",
+                }
             if timeline_target is not None and timeline_trace_dir is not None:
                 timeline_run = _run_timeline(
                     llm,
@@ -694,6 +703,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "length_penalty": args.length_penalty,
         },
         "beam_optimizations": optimization_settings(args),
+        "memory": memory,
         "precision": precision,
         "engine_config": {
             "worker_multiprocessing_method": multiprocessing_method,

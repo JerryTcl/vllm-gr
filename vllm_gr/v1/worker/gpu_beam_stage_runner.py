@@ -610,6 +610,26 @@ def _stage_hidden(owner: GPUBeamStageRunner, hidden: torch.Tensor) -> torch.Tens
 def _hidden_logits(owner: GPUBeamStageRunner, hidden: torch.Tensor) -> torch.Tensor | None:
     """Turn Decode hidden states into logits, or publish them for slicing."""
 
+    if (
+        getattr(owner, "enable_streaming_constrained_head", False)
+        and owner.dynamic is None
+        and hidden.is_contiguous()
+    ):
+        if not owner._stream_head_initialized:
+            from vllm_gr.v1.worker.streaming_constrained_head import (
+                StreamingConstrainedHead,
+            )
+
+            owner._stream_head = StreamingConstrainedHead.for_worker(
+                owner.worker,
+                owner.backend,
+                hidden.shape[0],
+                owner.beam.workspace.key.top_k,
+            )
+            owner._stream_head_initialized = True
+        if owner._stream_head is not None:
+            owner.hidden = hidden if owner._full_step_active else _stage_hidden(owner, hidden)
+            return None
     if owner._head_slice_request:
         # The row count decides whether slicing pays for this stage.
         cols = owner.head_slice_cols(hidden.shape[0])
@@ -700,10 +720,17 @@ class GPUBeamStageRunner:
         self._full_step_graphs: dict[tuple[Any, ...], Any] = {}
         self._full_step_tensors: tuple[torch.Tensor, ...] | None = None
         self.enable_full_step_graph = False
+        self.enable_streaming_constrained_head = False
+        self._stream_head_initialized = False
+        self._stream_head: Any = None
+        self._full_step_active = False
         if getattr(worker, "vllm_config", None) is not None:
             from vllm_gr.v1.worker.model_runner_common import _get_gr_config
 
             cfg = _get_gr_config(worker)
+            self.enable_streaming_constrained_head = getattr(
+                cfg, "enable_streaming_constrained_head", False
+            )
             self.enable_full_step_graph = getattr(cfg, "enable_full_step_graph", False) and getattr(
                 cfg, "beam_graph_enabled", False
             )
@@ -1115,9 +1142,13 @@ class GPUBeamStageRunner:
         if captured is None:
 
             def operation() -> None:
-                self.logits = _hidden_logits(self, hidden)
-                self._sample_device(entry)
-                self._write_control(slot)
+                self._full_step_active = True
+                try:
+                    self.logits = _hidden_logits(self, hidden)
+                    self._sample_device(entry)
+                    self._write_control(slot)
+                finally:
+                    self._full_step_active = False
 
             # Native Forward and this postprocess graph execute in stream order.
             captured = FullBeamStepGraph(operation, self._full_step_tensors)
@@ -1182,21 +1213,34 @@ class GPUBeamStageRunner:
                     f"{tuple(tensor.shape)} {tensor.dtype} {tensor.device}"
                 )
         if self.backend is not None:
-            self.backend.select_out_unchecked(
-                self.logits,
-                ConstraintMetadata(
+            if self.hidden is not None:
+                if self._stream_head is None:
+                    raise RuntimeError("constrained hidden states require a streamed head")
+                self._stream_head.select(
+                    self.hidden,
                     self.prefixes[:rows],
                     self.temperatures[:rows],
-                    0,
-                    layout.candidate_top_k,
+                    candidates,
+                    self.counts[:rows],
+                    self.constraint_steps,
                     trie_ids=self.trie_ids_by_width.get(layout.input_width),
-                ),
-                out_token_ids=candidates[0],
-                out_logprobs=candidates[1],
-                out_valid_mask=candidates[2],
-                out_valid_counts=self.counts[:rows],
-                device_step=self.constraint_steps,
-            )
+                )
+            else:
+                self.backend.select_out_unchecked(
+                    self.logits,
+                    ConstraintMetadata(
+                        self.prefixes[:rows],
+                        self.temperatures[:rows],
+                        0,
+                        layout.candidate_top_k,
+                        trie_ids=self.trie_ids_by_width.get(layout.input_width),
+                    ),
+                    out_token_ids=candidates[0],
+                    out_logprobs=candidates[1],
+                    out_valid_mask=candidates[2],
+                    out_valid_counts=self.counts[:rows],
+                    device_step=self.constraint_steps,
+                )
         else:
             sliced = self.hidden is not None
             logits = None if sliced else self.logits[:rows]
@@ -1753,6 +1797,9 @@ def get_stage_runner(
     if reuse_adapter:
         assert existing is not None
         adapter = existing
+        if adapter.backend is not backend:
+            adapter._stream_head_initialized = False
+            adapter._stream_head = None
         if not reuse_beam:
             adapter._full_step_graphs.clear()
             adapter._full_step_tensors = None

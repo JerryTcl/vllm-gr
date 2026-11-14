@@ -382,3 +382,9 @@ def validate_enable_full_step_graph(value: object) -> bool:
     if type(value) is not bool:
         raise TypeError("beam.enable_full_step_graph must be a boolean")
     return value
+
+
+def validate_enable_streaming_constrained_head(value: object) -> bool:
+    if type(value) is not bool:
+        raise TypeError("beam.enable_streaming_constrained_head must be a boolean")
+    return value

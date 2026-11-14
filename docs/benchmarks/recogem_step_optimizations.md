@@ -96,3 +96,52 @@ large end-to-end speedup or stable tail-latency gains.
 Validation: 202 selected CUDA/state/lifecycle/configuration/benchmark tests
 passed. New modules and affected tests passed isolated mypy checks; selected
 Ruff, isort, SPDX, character, CUDA API, configuration and whitespace checks passed.
+
+## Streaming constrained LM head
+
+`beam.enable_streaming_constrained_head` uses one reusable projection tile,
+activation-dtype legal-candidate storage and FP32 online max/sum state. It
+consumes each tile before reusing it. Full-window normalization is retained;
+normalizing over only valid continuations would change cross-parent scores.
+
+The existing constraint lookup is shared by full and streamed paths. Candidate
+ordering uses the original FP32 score/table-offset keys. The stream uses 8192
+columns for smaller windows and 32768 for windows of at least 65536 tokens.
+Bias, softcap, scaled/quantized heads, noncontiguous hidden states and dynamic
+widths retain their existing paths. Windows at most 8192 tokens, or plans whose
+workspace would not be smaller, also retain the original projection.
+
+The option defaults to `False`. Enable it before startup with:
+
+```python
+vllm_gr_config["beam"]["enable_streaming_constrained_head"] = True
+```
+
+Both model benchmark CLIs accept `--streaming-constrained-head` and its
+`--no-streaming-constrained-head` counterpart. Memory results measure the
+post-warmup inference peak including model, KV and captures, before profiling.
+
+This incremental ABBA keeps complete-step graph coverage enabled in both arms.
+The regular OneRec/Qwen cases use 8192-column tiles or their unchanged narrow
+window fallback. A separate wide-Qwen ABBA validates the final 32768-column
+tile: context 128, beam 128, fixed original input IDs and synthetic continuation
+tokens spanning `[1000, 150000)`. It is an operator stress workload, not a
+business recommendation catalog.
+
+| Configuration | Off p50 (ms) | On p50 (ms) | p50 reduction | Peak allocated saved (MiB) |
+| --- | ---: | ---: | ---: | ---: |
+| OneRec video, 1024 / 128 | 53.069708 | 53.108840 | -0.074% | 7.999 |
+| Qwen 128 / 128, narrow fallback | 10.960440 | 10.919202 | 0.376% | 0.000 |
+| Qwen 5000 / 256, narrow fallback | 103.536772 | 103.510427 | 0.025% | 0.000 |
+| Qwen 128 / 128, wide vocabulary | 12.798563 | 12.673010 | 0.981% | 64.532 |
+
+All 400 recorded requests per case match ordered tokens and scores in these
+controls. Wide Qwen mean latency decreases by 1.152%, with 64.532 MiB lower
+peak allocated memory. OneRec saves 7.999 MiB while latency is effectively
+flat. Narrow-Qwen differences are timing variation of the unchanged fallback
+path; no streaming performance gain is attributed to them.
+
+The 8192-column wide-Qwen trial increased p50 by 0.926% and changed scores;
+32768 columns reduce launches and pass exact parity in the final wide test.
+Blocked GEMM changes can affect BF16 rounding on other shapes/hardware, so
+these results do not establish universal model parity.

@@ -4,28 +4,39 @@
 
 import argparse
 
+_OPTIONS = {
+    "enable_full_step_graph": (
+        "full_step_graph",
+        "Capture CUDA Decode forward, projection, selection and Beam update.",
+    ),
+    "enable_streaming_constrained_head": (
+        "streaming_constrained_head",
+        "Stream full-window LM-head logits and canonical candidate selection.",
+    ),
+}
+
 
 def add_recogem_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--full-step-graph",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Capture CUDA Decode forward, projection, candidate selection and Beam update.",
-    )
     parser.add_argument(
         "--strict-bf16",
         action="store_true",
         help="Disable BF16 reduced-precision GEMM reduction for in-process V1 validation.",
     )
-
-
-def beam_optimization_config(args: argparse.Namespace) -> dict[str, bool]:
-    """Omit disabled defaults so existing canonical benchmark configs stay valid."""
-    return {"enable_full_step_graph": True} if getattr(args, "full_step_graph", False) else {}
+    for name, help_text in _OPTIONS.values():
+        parser.add_argument(
+            "--" + name.replace("_", "-"),
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help=help_text,
+        )
 
 
 def optimization_settings(args: argparse.Namespace) -> dict[str, bool]:
-    return {"enable_full_step_graph": bool(getattr(args, "full_step_graph", False))}
+    return {field: bool(getattr(args, name, False)) for field, (name, _) in _OPTIONS.items()}
+
+
+def beam_optimization_config(args: argparse.Namespace) -> dict[str, bool]:
+    return {field: enabled for field, enabled in optimization_settings(args).items() if enabled}
 
 
 def configure_benchmark_precision(args: argparse.Namespace) -> dict[str, bool]:

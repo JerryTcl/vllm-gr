@@ -20,6 +20,8 @@ from vllm_gr.config.benchmark_options import (
 
 
 def run_v1_benchmark(args, tokenizer, requests):
+    import torch
+
     import vllm_gr
     from examples.offline_inference.beam_search.offline_beam_search_v1 import (
         build_artifact,
@@ -98,6 +100,8 @@ def run_v1_benchmark(args, tokenizer, requests):
             model=args.model, trust_remote_code=True, vllm_gr_config=config, **engine_config
         ) as llm:
             for index in range(args.warmup_requests + args.num_prompts):
+                if index == args.warmup_requests:
+                    torch.cuda.reset_peak_memory_stats()
                 measured = index >= args.warmup_requests
                 row = index - args.warmup_requests if measured else index
                 if not llm.reset_prefix_cache():
@@ -127,6 +131,11 @@ def run_v1_benchmark(args, tokenizer, requests):
                             ],
                         }
                     )
+            memory = {
+                "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
+                "peak_reserved_bytes": torch.cuda.max_memory_reserved(),
+                "scope": "post-warmup inference, including model, KV and captured graphs",
+            }
     latencies = [sample["e2e_ms"] for sample in samples]
     repo = Path(vllm_gr.__file__).resolve().parents[1]
     result = {
@@ -142,6 +151,7 @@ def run_v1_benchmark(args, tokenizer, requests):
         "generated_steps": steps,
         "engine_config": engine_config,
         "beam_optimizations": optimization_settings(args),
+        "memory": memory,
         "precision": precision,
         "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
         "input_lengths_including_sid_begin": lengths[: args.num_prompts],

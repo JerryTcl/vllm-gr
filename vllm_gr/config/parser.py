@@ -41,6 +41,7 @@ from vllm_gr.config.validation import (
     validate_enable_full_step_graph,
     validate_enable_kv_pool_ping_pong,
     validate_enable_short_suffix_attention,
+    validate_enable_streaming_constrained_head,
     validate_npu_decode_execution,
     validate_prefill_flash_attn_version,
     validate_schema_version,
@@ -58,6 +59,7 @@ VOCAB_OFFSET_KEY: Final = "vllm_gr_vocab_offset"
 VOCAB_SLICE_SIZE_KEY: Final = "vllm_gr_vocab_slice_size"
 PREFILL_FA_VERSION_KEY: Final = "vllm_gr_prefill_flash_attn_version"
 SHORT_SUFFIX_ATTENTION_KEY: Final = "vllm_gr_enable_short_suffix_attention"
+STREAMING_CONSTRAINED_HEAD_KEY: Final = "vllm_gr_enable_streaming_constrained_head"
 FULL_STEP_GRAPH_KEY: Final = "vllm_gr_enable_full_step_graph"
 KV_POOL_PING_PONG_KEY: Final = "vllm_gr_enable_kv_pool_ping_pong"
 BEAM_GRAPH_ENABLED_KEY: Final = "vllm_gr_beam_graph_enabled"
@@ -84,6 +86,7 @@ KNOWN_GR_CONFIG_KEYS: Final = frozenset(
         BEAM_GRAPH_ENABLED_KEY,
         BEAM_ADAPTER_CACHE_ENABLED_KEY,
         SHORT_SUFFIX_ATTENTION_KEY,
+        STREAMING_CONSTRAINED_HEAD_KEY,
         FULL_STEP_GRAPH_KEY,
         KV_POOL_PING_PONG_KEY,
         PREFILL_FA_VERSION_KEY,
@@ -108,6 +111,7 @@ _BEAM_KEYS: Final = frozenset(
         "graph_enabled",
         "adapter_cache_enabled",
         "enable_short_suffix_attention",
+        "enable_streaming_constrained_head",
         "enable_full_step_graph",
         "enable_kv_pool_ping_pong",
         "prefill_flash_attn_version",
@@ -229,6 +233,9 @@ def gr_config_from_mapping(
         enable_short_suffix_attention=validate_enable_short_suffix_attention(
             beam_raw.get("enable_short_suffix_attention", True)
         ),
+        enable_streaming_constrained_head=validate_enable_streaming_constrained_head(
+            beam_raw.get("enable_streaming_constrained_head", False)
+        ),
         enable_full_step_graph=validate_enable_full_step_graph(
             beam_raw.get("enable_full_step_graph", False)
         ),
@@ -297,6 +304,8 @@ def gr_config_to_mapping(config: GRConfig) -> dict[str, object]:
         beam["adapter_cache_enabled"] = True
     if not config.enable_short_suffix_attention:
         beam["enable_short_suffix_attention"] = False
+    if config.enable_streaming_constrained_head:
+        beam["enable_streaming_constrained_head"] = True
     if config.enable_full_step_graph:
         beam["enable_full_step_graph"] = True
     if not config.enable_kv_pool_ping_pong:
@@ -422,6 +431,9 @@ def parse_gr_config(vllm_config: object | None) -> GRConfig:
         enable_short_suffix_attention=validate_enable_short_suffix_attention(
             additional_config.get(SHORT_SUFFIX_ATTENTION_KEY, True)
         ),
+        enable_streaming_constrained_head=validate_enable_streaming_constrained_head(
+            additional_config.get(STREAMING_CONSTRAINED_HEAD_KEY, False)
+        ),
         enable_full_step_graph=validate_enable_full_step_graph(
             additional_config.get(FULL_STEP_GRAPH_KEY, False)
         ),
@@ -522,6 +534,11 @@ def write_gr_config(vllm_config: object, gr_config: GRConfig) -> None:
         additional_config.pop(SHORT_SUFFIX_ATTENTION_KEY, None)
     else:
         additional_config[SHORT_SUFFIX_ATTENTION_KEY] = False
+
+    if gr_config.enable_streaming_constrained_head:
+        additional_config[STREAMING_CONSTRAINED_HEAD_KEY] = True
+    else:
+        additional_config.pop(STREAMING_CONSTRAINED_HEAD_KEY, None)
 
     if gr_config.enable_full_step_graph:
         additional_config[FULL_STEP_GRAPH_KEY] = True
