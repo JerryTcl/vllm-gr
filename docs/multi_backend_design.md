@@ -85,11 +85,13 @@ The replacements that run instead:
 | Runner selection | `model_runner_patch._active_platform_module_name()` reads `current_platform.device_type` and picks a module (`model_runner_patch.py:255-271`) |
 | Attention selection | `beam_attn._get_platform_execution_module()` picks GPU, NPU cascade, or NPU xllm (`beam_attn.py:91-113`) |
 
-There is a second, structural reason the unwired getters cannot simply be
-plugged in: `get_model_runner_hooks()` and `get_attention_execution()` return a
-**module** object (`cast(Protocol, import_module(...))`, `platforms/cuda.py:39-49`),
-not an adapter that satisfies the declared Protocol. Callers cannot consume them
-as contracts, so they re-derive the choice themselves.
+A second reason the unwired getters cannot simply be plugged in is that neither
+factory takes a plan or an owner. `get_model_runner_hooks()` and
+`get_attention_execution()` import a module and `cast` it
+(`platforms/cuda.py:39-49`), so a caller cannot bind the result to a specific
+engine, and the `cast` itself proves nothing about conformance. Returning a module
+is acceptable; returning an unbound one is not. See
+[Protocol conformance is structural](#protocol-conformance-is-structural).
 
 ### Hardware-name branches in shared layers
 
@@ -208,8 +210,8 @@ type is insufficient. Unknown subclasses are rejected unless explicitly supporte
 
 Resolution follows this order:
 
-1. Register built-ins and discover external provider objects. Validate all
-   descriptors before committing registry changes.
+1. Register built-ins and discover external provider objects. Validate every
+   provider's metadata and API version before committing registry changes.
 2. Obtain `PlatformIdentity` from vLLM. Never infer selection from installed
    packages or simultaneous `torch.*.is_available()` results.
 3. If `backend.id` is explicit, require that provider to match the upstream
@@ -242,48 +244,87 @@ must never suppress duplicate IDs or select an incompatible platform.
 
 ## Provider contract
 
-Introduce an API version and keep the provider small. Compose separate execution
-services instead of a large abstract base class with many optional callbacks.
+Introduce an API version, keep the provider small, and compose separate execution
+services instead of a large abstract base class with many optional callbacks. Every
+factory receives its plan and its lifecycle owner, and no factory reads a hidden
+current plan.
 
-The immediate change is three additions to the existing five methods, not a new
-six-type API. The remaining contracts are deferred until a second real backend
-exists to constrain them:
+The current method set is **not** retained unchanged. Four signatures change, and
+the migration must say so rather than implying a compatible extension:
+
+| Current method | Proposed method | Change |
+| --- | --- | --- |
+| `device_type: str` | `backend_id: str` | Identity is no longer tensor placement |
+| (absent) | `api_version: int` | Explicit version, never inferred |
+| (absent) | `matches(identity)` | Replaces `device_type` equality |
+| (absent) | `resolve(request) -> BackendPlan` | New admission boundary |
+| `check_environment()` | `check_environment(context)` | Gains process role and runtime context |
+| `apply_runtime_patches()` | `install_process_hooks(context)` | Renamed; returns a report, not a count |
+| `get_model_runner_hooks()` | `create_model_runner_adapter(*, plan, native_runner)` | Becomes a bound factory |
+| `get_attention_execution()` | `create_attention_executor(*, plan, device)` | Becomes a bound factory |
+| `create_constrained_topk_execution(device=...)` | `create_constrained_topk_execution(*, plan, device)` | Gains the plan |
 
 ```python
-from collections.abc import Callable
 from typing import Protocol
 
 
 class GRBackendProvider(Protocol):
-    # New: explicit identity and versioning.
     backend_id: str          # "cuda" | "ascend" | vendor-prefixed
     api_version: int         # 2
 
-    # New: replace device_type equality with identity matching.
     def matches(self, identity: "PlatformIdentity") -> bool: ...
 
-    # New: freeze the capability surface once, before workers allocate.
     def resolve(self, request: "BackendRequest") -> "BackendPlan": ...
 
-    # Existing, retained.
     def check_environment(self, context: "ProcessContext") -> "RuntimeReport": ...
+
     def install_process_hooks(self, context: "ProcessContext") -> "HookReport": ...
-    def create_model_runner_adapter(self) -> "ModelRunnerAdapter": ...
-    def create_attention_executor(self) -> "AttentionExecutor": ...
+
+    def create_model_runner_adapter(
+        self, *, plan: "BackendPlan", native_runner: object
+    ) -> "ModelRunnerAdapter": ...
+
+    def create_attention_executor(
+        self, *, plan: "BackendPlan", device: "Device"
+    ) -> "AttentionExecutor": ...
+
     def create_constrained_topk_execution(
-        self, *, device: "torch.device | str | None" = None
+        self, *, plan: "BackendPlan", device: "Device"
     ) -> "ConstrainedTopKExecution | None": ...
 ```
 
-`get_model_runner_hooks()` and `get_attention_execution()` change meaning: they
-must return objects, not modules. This is the precondition for consuming them as
-contracts, and it is why stage 2 of the migration below precedes runner and
-attention dispatch.
+These are proposed signatures, not an existing importable API. The concrete native
+runner type stays inside the backend adapter.
 
-`GRBackendRuntime` and `RunnerContext` from the previous revision are dropped
-from the near-term contract. They describe lifecycle ownership that can be
-expressed with `BackendPlan` plus the existing runner lifecycle; adding them now
-would be guessing an interface with no second consumer.
+Stage and graph services are composed behind the selected runner adapter in the
+first implementation. They get independent provider factories only when real
+callers justify them; until then, adding factories would repeat the earlier
+mistake of designing interfaces with no consumer.
+
+### Protocol conformance is structural
+
+Python modules can implement a `Protocol` when their exported members have
+compatible signatures. Therefore:
+
+- A module-returning getter is not inherently invalid. The existing
+  `beam_attn_gpu.py` and `beam_attn_npu.py` modules are legitimate implementations
+  of the attention contract.
+- `cast` proves nothing and is not evidence of conformance.
+- Conformance is validated by checking required members, their signatures, and
+  their behavior, not by banning modules categorically.
+- Keep stateless module implementations where they fit. Introduce bound adapter
+  objects only where plan binding, state ownership, or lifecycle adaptation
+  requires them.
+
+The earlier revision of this document described module returns as a structural
+defect and required adapter objects everywhere. That was wrong. The real defect in
+`get_model_runner_hooks()` and `get_attention_execution()` is narrower: they take
+no plan and have no owner, so a caller cannot bind them to a specific engine. The
+fix is the factory signature above, not a blanket ban on modules.
+
+`GRBackendRuntime` and `RunnerContext` are not required for the first
+implementation. Removing them must not remove the explicit path by which every
+service receives its engine plan and lifecycle owner.
 
 ### Deferred contracts
 
@@ -630,17 +671,39 @@ process restart.
 ### Machine-readable patch ownership
 
 `docs/runtime_patch_inventory.md` and `docs/patch_inventory.yaml` already record
-owner, installer, activation and removal conditions. Add a `backend:` field to
-every entry so provider ownership is checkable rather than descriptive:
+owner, installer, activation and removal conditions. Add an explicit ownership
+scope, and a backend ID only for backend-owned entries:
 
 ```yaml
-  - id: GR-PATCH-012
-    backend: ascend
-    owner: vllm_gr/v1/worker/npu_model_runner_patch.py
+- id: GR-PATCH-003
+  scope: core
+  backend_id: null
+  owner: vllm_gr/logprobs.py
+  installer: vllm_gr.logprobs_patch.patch_flat_logprobs
 ```
 
-A contract test asserts that every active patch ID is claimed by exactly one
-registered provider, and that a provider's declared IDs exist in the inventory.
+```yaml
+- id: GR-PATCH-012
+  scope: backend
+  backend_id: ascend
+  owner: vllm_gr/v1/worker/npu_model_runner_patch.py
+  installer: vllm_gr.v1.worker.model_runner_patch.apply_worker_patches
+```
+
+Shared frontend, serving, and orchestration patches stay owned by core. Applicability
+and installer ownership are separate concepts, so `scope` does not describe who
+calls the installer.
+
+The contract test verifies that each **required** active patch has exactly one
+installer across core plus the *selected* provider, and that every declared ID
+exists in the inventory. Two rules constrain that test:
+
+- An unselected registered provider cannot satisfy it, because evaluation happens
+  after selection.
+- Not every shared patch must be claimed by a hardware provider. Requiring that
+  would misattribute core frontend and serving work to whichever backend happens
+  to be active.
+
 This is what makes "ownership is explicit" verifiable; prose cannot.
 
 ## Package layout and extension contract
@@ -658,17 +721,24 @@ in the same change that alters dispatch.
 | `vllm_gr/backends/ascend/` | Ascend provider and Attention/Graph/Runner adapter composition |
 | Existing `v1/worker/`, `v1/attention/`, `ops/` | Existing implementations wrapped first, moved only in later focused changes |
 
-An external API-v2 package exports a lightweight provider object:
+An external API-v2 package exports a lightweight provider object whose metadata is
+importable without loading the vendor runtime:
 
 ```toml
 [project.entry-points."vllm_gr.platform_backends"]
 vendor_accel = "vllm_gr_vendor.provider:BACKEND"
 ```
 
-For API v2, the entry-point name equals `descriptor.backend_id`. Core validates
-descriptor shape and API compatibility before activation. The provider declares
-supported GR and upstream runtime versions; kernel/driver validation occurs in the
-selected environment. Expose installation origin and versions in diagnostics.
+For API v2, the entry-point name equals `provider.backend_id`. Use direct provider
+metadata consistently: `provider.backend_id` and `provider.api_version`. The loader
+must not require an undeclared `provider.descriptor`.
+
+The v2 schema also declares the provider's supported GR, native vLLM and vendor
+runtime version ranges. Distribution origin and installed version come from package
+metadata. Those declarations are separate from the actual device and kernel checks
+performed in the selected environment. Core validates provider shape and API
+compatibility before activation. Expose installation origin and resolved versions
+in diagnostics.
 
 Keep vendor dependencies optional to core. A CUDA install must not import or
 install the Ascend runtime. Share Python interfaces and semantic resources across
@@ -684,8 +754,9 @@ without a duplicate-ID error.
 ### Adding a third backend
 
 1. Provide a working native/vendor vLLM platform runtime independently of GR.
-2. Implement a lightweight API-v2 descriptor with a unique backend ID and strict
-   platform matching; register its provider object in the existing entry-point group.
+2. Implement a lightweight API-v2 provider object with `backend_id`, `api_version`,
+   a unique backend ID and strict platform matching; register it in the existing
+   entry-point group.
 3. Implement the selected runner/stage, attention, constraint and graph services.
    Advertise only supported combinations; graph support is optional when the
    declared eager execution path satisfies the requested GR contract.
@@ -702,13 +773,19 @@ propose a shared contract extension, rather than silently changing its meaning.
 
 The completion criterion "no hardware branches in shared dispatch" is currently a
 manual review judgement. Make it machine-checkable with a pre-commit check under
-`tools/pre_commit/`, alongside the existing hooks:
+`tools/pre_commit/`, alongside the existing hooks.
 
-- Outside `vllm_gr/platforms/`, `vllm_gr/backends/`, and an explicit, reviewed
-  exception list, reject `device_type ==`, `is_npu_available`, `is_cuda_available`,
-  `current_platform`, and `torch_npu`.
-- The exception list must name a file, a count, and the migration stage that
-  removes it, so it can only shrink.
+The check targets hardware-dependent *selection* and vendor-runtime imports in
+shared execution:
+
+- Outside `vllm_gr/platforms/`, `vllm_gr/backends/` and a reviewed allowlist,
+  reject `is_npu_available`, `is_cuda_available`, `torch_npu`, and device-type
+  equality used to choose an implementation.
+- A raw ban on every `current_platform` occurrence would also reject the identity
+  bridge and legitimate diagnostics. Restrict the rule to sites that use the value
+  to select an implementation, and list identity bridging as an explicit exception.
+- Each allowlist entry names a file, a count, and the migration stage that removes
+  it, so the list can only shrink.
 
 Without this guard, branches reappear after the migration completes and the
 boundary silently degrades.
@@ -722,14 +799,17 @@ the identity work.
 
 | Stage | Main files and responsibilities | Exit condition |
 | --- | --- | --- |
-| 1. Wire the provider | `plugin.py` calls `activate_current_backend()`; `check_environment()` delegates to `provider.check_environment()`; `_apply_patches` delegates Ascend-specific work to `provider.apply_runtime_patches()` | The four currently unwired methods have production callers; `tests/platforms/` still passes; ordinary CUDA and NPU startup unchanged |
-| 2. Getters return adapters | `platforms/cuda.py`, `platforms/npu.py`, `model_runner_patch.py`, `beam_attn.py` | Runner and attention dispatchers consume provider objects; no module-typed `cast` remains |
-| 3. Identity and versioning | `platforms/identity.py`, `registry.py`, `loader.py`, built-in disable switch, v1 compatibility adapter | CUDA/ROCm collision prevented; duplicate and ambiguous providers fail; import isolation and legacy mapping verified |
-| 4. Plan and fingerprint | `platforms/plan.py`, configuration parser, worker readiness report | Known-information validation at engine config; plan mismatch fails startup; `resolve()` proven idempotent across an `EngineArgs` round-trip |
-| 5. Runner and stages | `model_runner_patch.py`, `gr_execution.py`, `gr_startup.py`, GPU V1/V2 and NPU adapters | Shared dispatch calls bound services; native execute/sample ordering and retirement remain correct |
-| 6. Attention and constraints | `beam_attn.py`, metadata builders, `constraints/startup.py`, constraint `implementation_id` | Module-level platform constants and the global mode cache are gone; Prefill/Decode selections and KV layouts are coherent; cascade/xllm and constraint semantics preserved |
-| 7. Graph lifecycle | `gr_startup.py`, `prefill_graph_runner.py`, Decode/Prefill graph implementations | Replay, fallback, model reload and resource ownership pass each path's tests |
-| 8. External conformance | Provider packaging, docs, out-of-tree test provider, boundary lint | Third provider integrates without hardware branches in shared execution; optional Ascend extraction can proceed |
+| 1. Wire existing initialization | `plugin.py` calls `activate_current_backend()`; `check_environment()` delegates to `provider.check_environment()`; `_apply_patches` delegates Ascend-specific work to `provider.install_process_hooks()` | These **two** previously unwired methods have production callers; bootstrap timing is preserved; ordinary CUDA and Ascend startup unchanged |
+| 2. Establish versioned selection | `platforms/identity.py`, v2 schema, `registry.py`, `loader.py`, strict registration, v1 adapter, built-in disable switch | Compatibility behavior is fixed before public signature changes; duplicate, unsupported and ambiguous cases fail with origin diagnostics |
+| 3. Bind admitted execution | `platforms/plan.py`, configuration parser, explicit factory arguments, worker readiness report | Services receive their owning engine's plan; no hidden current-plan state; `resolve()` proven pure across an `EngineArgs` round-trip |
+| 4. Route runners and stages | `model_runner_patch.py`, `gr_execution.py`, `gr_startup.py`, GPU V1/V2 and NPU adapters | Shared dispatch calls bound services; native execute/sample ordering, cancellation and retirement preserved |
+| 5. Route attention and constraints | `beam_attn.py`, metadata builders, `constraints/startup.py`, constraint `implementation_id` | No shared hardware selection branches and no global per-engine attention-mode cache; Prefill/Decode choices and KV layouts coherent |
+| 6. Complete graph lifecycle | `gr_startup.py`, `prefill_graph_runner.py`, Decode/Prefill graph implementations | Each admitted path proves actual replay, fallback reasons, invalidation and safe resource lifetime |
+| 7. Prove external extensibility | Provider packaging, docs, installed out-of-tree test provider, import isolation, boundary checks | A provider integrates without editing common dispatch; hardware support still requires real-device evidence |
+
+Stage 1 is limited to the two methods that can be wired without changing a public
+signature. Renaming the remaining getters into plan-bound factories belongs to
+stages 3 to 5, because it cannot happen before identity and plan exist.
 
 Update owning contracts, examples and both patch inventory files alongside every
 change to actual patch behavior. Keep this proposal separate from descriptions of
@@ -779,22 +859,43 @@ The migration is complete when:
 
 ## Review findings and dispositions
 
-Findings raised on the first revision of this proposal, and how the revision
-answers them.
+Findings raised on earlier revisions, and how the current revision answers them.
+Rows 2 and 9 record corrections to this document's own claims, not to the code.
 
 | # | Finding | Disposition |
 | --- | --- | --- |
-| 1 | The migration ordered the highest-value, lowest-risk change last | Accepted: wired provider is now stage 1; identity work is stage 3 and runs in parallel |
-| 2 | Six new contracts in the first API revision had no consumer | Accepted: `GRBackendRuntime` and `RunnerContext` deferred; three additions to the existing five methods |
+| 1 | The migration ordered the highest-value, lowest-risk change last | Accepted: stage 1 now wires the two methods that need no signature change |
+| 2 | Six new contracts in the first API revision had no consumer | Accepted, then revised: `GRBackendRuntime` and `RunnerContext` stay out, and stage/graph factories stay composed behind the runner adapter until a caller justifies them |
 | 3 | Version-1 and version-2 providers were distinguishable only by duck typing | Accepted: explicit `api_version`, fixed aliases, no capability inference from old attributes |
-| 4 | Built-in and external Ascend providers conflict with no stated switch | Accepted: `VLLM_GR_DISABLE_BUILTIN_BACKENDS` switch plus named sources in diagnostics |
-| 5 | Module-level platform constants in `beam_attn.py` were not in the plan | Accepted: three ordered attention work items; constants and global mode cache are exit conditions |
+| 4 | Built-in and external Ascend providers conflict with no stated switch | Accepted: `VLLM_GR_DISABLE_BUILTIN_BACKENDS` switch plus named origins in diagnostics |
+| 5 | Module-level platform constants in `beam_attn.py` were not in the plan | Accepted: constants and the global mode cache are exit conditions of stage 5 |
 | 6 | Bootstrap hook timing was under-specified and would break Ascend | Accepted: phase 1 keeps the current minimal hook set; GR-PATCH-019 and GR-PATCH-002 documented as constraints |
-| 7 | Capability dimensions were listed but the plan had no representation or fingerprint | Accepted: frozen options, declarative combination table, fingerprint including adapter version |
+| 7 | Capability dimensions were listed but the plan had no representation or fingerprint | Accepted: canonical encoding, SHA-256 fingerprint, provider API and adapter versions included |
 | 8 | Retiring `ConstraintTableBackendEnum` contradicted "keep current limits" | Accepted: two-step retirement with `implementation_id` first |
-| 9 | Patch ownership was described but not machine-readable | Accepted: `backend:` field in the inventory plus a claiming contract test |
-| 10 | The acceptance criterion was only manually checkable | Accepted: pre-commit boundary check with a shrinking exception list |
+| 9 | The document claimed module returns violate the Protocol | **Corrected**: modules can satisfy a Protocol structurally. The real defect is the missing plan and owner, fixed by the factory signatures |
+| 10 | The acceptance criterion was only manually checkable | Accepted: boundary check with a reviewed allowlist; identity bridging and diagnostics are legitimate exceptions |
 | 11 | `resolve()` was not required to be pure, yet plugin registration re-runs per `EngineArgs` round-trip | Accepted: purity and memoization constraints added to the plan contract |
+| 12 | Patch ownership required every active patch to be claimed by a provider | **Corrected**: `scope: core` entries stay with core; only backend-scoped entries name a provider, and evaluation happens after selection |
+| 13 | The contract implied the existing method set was retained unchanged | **Corrected**: a signature-change table lists every renamed method and gained argument |
+
+## Alignment with the design RFC
+
+[RFC #706](https://github.com/JiusiServe/vllm-gr/issues/706) is the requirement and
+decision record; this document is the detailed design it references. Where the two
+differ, the RFC governs. The RFC asks that this document reconcile five points, all
+addressed above:
+
+| RFC point | Where this document answers it |
+| --- | --- |
+| Provider signatures | [Provider contract](#provider-contract), including the signature-change table and plan-bound factories |
+| Metadata references | `provider.backend_id` and `provider.api_version`; no `provider.descriptor` |
+| Protocol explanation | [Protocol conformance is structural](#protocol-conformance-is-structural) |
+| Patch ownership rule | [Machine-readable patch ownership](#machine-readable-patch-ownership), with `scope` and post-selection evaluation |
+| Stage exit conditions | [Migration plan](#migration-plan), seven stages |
+
+The RFC also fixes a feedback period of at least one week before the API-v2 contract
+is frozen, so the signatures above are proposals pending that discussion rather than
+an implementation contract.
 
 ## References
 

@@ -26,13 +26,17 @@ The wiring status of each provider method is:
 | `get_model_runner_hooks()` | none | Unwired; `model_runner_patch` decides directly |
 | `get_attention_execution()` | none | Unwired; `beam_attn` decides directly |
 
-The two getters additionally return module objects rather than adapters that
-satisfy the declared protocols, so a caller cannot consume them as contracts.
-Returning adapter objects is a separate migration stage.
+The two getters also take no plan and have no owner, so a caller cannot bind their
+result to a specific engine; both import a module and `cast` it, which asserts
+conformance rather than checking it. A module may legitimately satisfy the
+protocol structurally, so the missing piece is the binding, not the module return.
+Binding each factory to a plan and a lifecycle owner is a separate migration stage.
 
 The [multi-hardware design proposal](multi_backend_design.md) describes a future
 versioned backend identity and execution boundary. Its proposed interfaces and
-configuration are not part of the current contract below.
+configuration are not part of the current contract below. The
+[design RFC](https://github.com/JiusiServe/vllm-gr/issues/706) states the
+requirement; where the two differ, the RFC governs.
 
 ## Lifecycle and process model
 
