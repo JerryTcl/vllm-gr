@@ -2,10 +2,26 @@
 
 ## Decision and scope
 
-Extend the existing GR backend boundary while retaining vLLM platform discovery
-and vendor runtimes. vLLM selects the hardware platform; vLLM-GR selects an
-implementation of recommendation execution for that platform. Common request,
-session, scheduling, scoring, and result semantics remain in GR core.
+Reuse vLLM's platform discovery rather than building a second hardware discovery
+system, and keep a thin GR-specific provider on top of the platform vLLM has
+already selected.
+
+vLLM selects the hardware platform and owns the vendor runtime. vLLM-GR selects
+an implementation of recommendation execution for that platform. Common request,
+session, scheduling, scoring, and result semantics remain in GR core and contain
+no hardware names.
+
+There are two separate questions in "should GR have its own hardware plugin
+system", and they have different answers:
+
+| Question | Answer | Reason |
+| --- | --- | --- |
+| Should GR perform hardware discovery? | No | Upstream platform selection already resolves exactly one platform per process and rejects multiple active out-of-tree platform plugins. A second discovery would conflict with `vllm-ascend` on NPU and with native CUDA on GPU. |
+| Should GR have its own provider registry? | Yes | Upstream `Platform` describes devices. It has no contract for GR sessions, stage dispatch, constrained candidate semantics, or graph ownership. |
+
+So the target is not "a parallel plugin system". It is a narrow GR backend layer
+whose key is a **backend identity derived from the already-selected platform**,
+not a hardware probe of its own.
 
 This is a proposed architecture and migration plan. The interfaces and
 configuration additions below are not implemented by this document. CUDA and
@@ -20,39 +36,96 @@ to the shared protocol.
 
 One process retains one selected hardware backend. Multiple engines using that
 backend may have independent configurations and resources within upstream
-process-level constraints. Running one model
-across heterogeneous GPU/NPU workers, changing platforms in a live process,
-expanding supported parallelism, and changing Beam request semantics are outside
-this proposal.
+process-level constraints. Running one model across heterogeneous GPU/NPU
+workers, changing platforms in a live process, expanding supported parallelism,
+and changing Beam request semantics are outside this proposal.
 
-## Existing boundaries and gaps
+## Current state audit
 
-The following observations apply to the source reviewed at
+The provider boundary already exists in `vllm_gr/platforms/`, but production code
+does not use most of it. Any migration plan that assumes the contract is live is
+wrong, so the gap is recorded first.
+
+The reviewed source is
 [`fd0184b9`](https://github.com/JiusiServe/vllm-gr/tree/fd0184b9a0183752cf6fdcb6e5df72622f72e115).
-The [platform contract](platform_backend_contract.md) describes the current API.
 
-| Boundary | Current implementation | Required change |
+### Registered entry points
+
+`pyproject.toml` declares exactly one entry-point group:
+
+```toml
+[project.entry-points."vllm.general_plugins"]
+vllm_gr = "vllm_gr.plugin:register"
+```
+
+There is no `vllm.platform_plugins` registration, which is correct: GR must not
+attempt to become a platform. `platforms/loader.py` additionally reads the GR-only
+group `vllm_gr.platform_backends`, whose entry-point name must equal
+`provider.device_type`.
+
+### The provider contract is declared but mostly unwired
+
+`GRBackendProvider` has five required methods. Only one is called on a production
+path:
+
+| Provider method | Production caller | Status |
 | --- | --- | --- |
-| Process entry | `plugin.py` registers under `vllm.general_plugins` | Retain upstream loading; make initialization phases explicit |
-| Provider discovery | `platforms/loader.py` loads objects from `vllm_gr.platform_backends` | Retain the group and atomic registration; version the provider contract |
-| Selection | Registry keys and entry-point names equal `device_type` | Separate backend identity from tensor device type |
-| Startup | `_env_check.py` selects checks directly; `patch.py` directly invokes compatibility patches | Route backend-specific checks and hooks through the selected provider |
-| Constraint execution | `constraints/startup.py` activates a provider and creates constrained Top-K execution | Preserve the existing execution and scoring contract |
-| Runner | `model_runner_patch.py` selects CUDA V1, CUDA V2, or NPU directly | Resolve a runner adapter without losing runner-generation selection |
-| Attention | `beam_attn.py` probes availability and selects CUDA, NPU cascade, or NPU xllm | Bind an engine-specific attention adapter with separate Prefill/Decode decisions |
-| Stages and graphs | `gr_execution.py`, `gr_startup.py`, and `prefill_graph_runner.py` select device implementations | Bind stage and graph services during runtime construction |
+| `create_constrained_topk_execution` | `constraints/startup.py:77` | Wired |
+| `check_environment` | none | Unwired |
+| `apply_runtime_patches` | none | Unwired |
+| `get_model_runner_hooks` | none | Unwired |
+| `get_attention_execution` | none | Unwired |
 
-Provider getters currently describe implementations but do not replace the
-Runner and Attention dispatchers. Provider activation in the constraint path
-does not establish that the general startup path uses provider environment and
-patch methods.
+The replacements that run instead:
 
-The shared layer also contains hardware-shaped details, including FlashAttention
-version arguments, NPU metadata/layout branches, and GPU workspace imports.
-Moving dispatch alone will not finish the abstraction: these details must move
-behind adapters while their logical contracts remain shared.
+| Responsibility | Actual production path |
+| --- | --- |
+| Environment validation | `plugin.initialize_runtime()` calls `_env_check.check_environment()` directly; that function branches on `str(current_platform.device_type) == "npu"` (`_env_check.py:166-177`) |
+| Compatibility patches | `patch._apply_patches()` calls `ascend_compat.*`, `npu_spawn_patch`, and `pangu_compat` directly (`patch.py:541-555`) |
+| Runner selection | `model_runner_patch._active_platform_module_name()` reads `current_platform.device_type` and picks a module (`model_runner_patch.py:255-271`) |
+| Attention selection | `beam_attn._get_platform_execution_module()` picks GPU, NPU cascade, or NPU xllm (`beam_attn.py:91-113`) |
 
-## Reuse of native vLLM
+There is a second, structural reason the unwired getters cannot simply be
+plugged in: `get_model_runner_hooks()` and `get_attention_execution()` return a
+**module** object (`cast(Protocol, import_module(...))`, `platforms/cuda.py:39-49`),
+not an adapter that satisfies the declared Protocol. Callers cannot consume them
+as contracts, so they re-derive the choice themselves.
+
+### Hardware-name branches in shared layers
+
+These are the places that must disappear from shared dispatch. Counts are lines
+containing a hardware predicate or device-type comparison.
+
+| Location | What it decides |
+| --- | --- |
+| `v1/attention/backends/beam_attn.py` | 32 lines reference module-level `NPU_DEVICE` / `CUDA_DEVICE`; also a process-global attention-mode cache |
+| `v1/worker/gr_execution.py:94,106,123,128` | Stage runner and retirement selection by `str(worker.device).split(":")[0]` |
+| `v1/worker/gr_startup.py:64-69` | Beam graph capture selection |
+| `v1/worker/prefill_graph_runner.py:54` | Prefill graph runner class selection |
+| `v1/attention/backends/beam_attn_metadata.py:344-346` | Caches `_is_cuda` / `_is_npu` from `device.type` |
+| `v1/beam/beam_decision.py:108,600,635,647,695` | Decision and operator-path selection |
+| `engine/arg_utils_gr.py:355,383,392` | Default pinning for NPU/CUDA |
+| `entrypoints/beam_search_v1/input_processor.py:177-181` | Constraint table backend default |
+| `v1/npu_kv_layout.py:200` | KV layout policy gate |
+| `v1/ascend_compat.py:35` | Platform predicate |
+| `constraints/startup.py:111` | Vocabulary slicing is CUDA-only |
+| `constraints/loader.py:595,605,621,631,652` and `v1/worker/model_runner_patch.py:141,171,194` | `ConstraintTableBackendEnum` used as a behavior selector (CUDA slice versus NPU stage vocabulary) |
+
+Two of these deserve emphasis because they are not just missing abstraction:
+
+1. `beam_attn.py:42-43` evaluates `is_npu_available()` / `is_cuda_available()` at
+   **module import**. The CUSTOM attention backend is a single process-global
+   registry slot (GR-PATCH-013), so platform identity is effectively frozen at
+   import time.
+2. `beam_attn.py:45-88` keeps `_NPU_DECODE_EXECUTION_MODE` as a process-global
+   cache, which already violates this proposal's own "no process-global per-engine
+   attention mode" rule. It must be retired as part of the attention stage, not
+   inherited by the new interface.
+
+Moving dispatch alone therefore does not finish the abstraction. The larger
+defect is that the contract is not **assembled into the runtime** at all.
+
+## Relationship to native vLLM
 
 Use `vllm.general_plugins` to load GR in each participating process. Continue
 using native CUDA support and the vendor's `vllm.platform_plugins` package for
@@ -65,22 +138,25 @@ platform selection chooses one platform and rejects multiple active out-of-tree
 platform plugins. A GR backend augments that selection; it does not perform a
 second hardware discovery or replace `current_platform`.
 
-The GR provider registry is still necessary because upstream Platform does not
-define GR session stages, constrained candidate semantics, or GR graph ownership.
-Use public upstream extension points before compatibility patches. Where a patch
-is still necessary, keep it version-scoped and owned by a named adapter.
+Subclassing the vendor `Platform` class and re-registering it is also rejected.
+Upstream `Platform` exposes several dozen overridable methods whose meaning is
+device and runtime, not GR session or stage semantics; a GR subclass would have to
+inherit the vendor subclass, producing MRO conflicts and a per-upgrade coupling to
+every vendor method, in exchange for nothing that the GR provider does not already
+provide.
 
 ```mermaid
 flowchart TD
-    P["vLLM current_platform"] --> R["GR provider resolution"]
-    E["vLLM general plugin"] --> C["Common GR runtime"]
-    R --> B["Resolved backend plan"]
+    P["vLLM current_platform<br/>(one per process)"] --> ID["GR PlatformIdentity<br/>import-light record"]
+    E["vllm.general_plugins"] --> C["Common GR runtime<br/>no hardware names"]
+    ID --> R["GR provider resolution<br/>backend_id match"]
+    R --> B["Frozen BackendPlan"]
     C --> S["GR execution contracts"]
     B --> S
     S --> G["CUDA adapters"]
     S --> N["Ascend adapters"]
     S --> X["External provider adapters"]
-    G --> V["Native or vendor vLLM runtime"]
+    G --> V["Native or vendor vLLM runtime<br/>device init, comm, weights,<br/>attention registry, compile, graph infra"]
     N --> V
     X --> V
 ```
@@ -92,7 +168,8 @@ inside one engine.
 
 | Option | Assessment |
 | --- | --- |
-| Use only upstream Platform methods | Reuses discovery, but has no complete contract for GR stages, constraints and graph ownership |
+| Use only upstream Platform methods | Reuses discovery, but has no contract for GR stages, constraints and graph ownership |
+| Register a GR subclass of the vendor Platform | Conflicts with the one-platform rule, inherits the entire vendor method surface, breaks on vendor upgrades |
 | Build a separate hardware framework | Duplicates platform/runtime responsibilities and increases conflicts with vendor plugins |
 | Native platform plus a thin GR provider | Selected: reuse the upstream runtime and define only GR-specific execution boundaries |
 
@@ -103,21 +180,24 @@ their adaptation in one owner instead of spreading it through shared GR code.
 ## Backend identity and deterministic selection
 
 `device_type` identifies tensor placement, not a unique hardware implementation.
-For example, vLLM's `RocmPlatform.device_type` is also `"cuda"`. Resolving every
-`"cuda"` device to the NVIDIA provider would select incompatible kernels.
+AMD ROCm's `RocmPlatform.device_type` is also `"cuda"` (see the upstream reference
+in [References](#references)). Resolving every `"cuda"` device to the NVIDIA
+provider would select incompatible kernels.
 
 Introduce a distinct `backend_id`, using `cuda` and `ascend` for the initial
 providers. Represent the already-selected upstream platform with an immutable,
-import-light `PlatformIdentity` containing:
+import-light `PlatformIdentity`:
 
-- Upstream platform kind, obtained through its platform enum or predicates.
+- Upstream platform enum value, read from the live `current_platform`.
 - Tensor `device_type`.
-- Platform class qualified name and relevant class lineage.
+- Platform class qualified name, built from `type(current_platform)`.
 
-Class lineage allows a vendor-specific subclass to be recognized without
-importing every vendor runtime. Out-of-tree providers must match an explicit
-vendor identity; the generic `OOT` enum or a shared tensor device type is
-insufficient. Unknown subclasses are rejected unless explicitly supported.
+Class lineage allows a vendor-specific subclass to be recognized without importing
+every vendor runtime, because `current_platform` is already an instance: reading
+`type()` and `__module__` costs no import and keeps the existing
+`tests/platforms/test_import_isolation.py` guarantee. Out-of-tree providers must
+match an explicit vendor identity; the generic `OOT` enum or a shared tensor device
+type is insufficient. Unknown subclasses are rejected unless explicitly supported.
 
 | Upstream platform | Tensor device type | GR backend ID | Matching requirement |
 | --- | --- | --- | --- |
@@ -140,66 +220,89 @@ Resolution follows this order:
    feature requirements before exposing the GR engine as ready.
 
 Duplicate backend IDs from different providers are errors, including duplicates
-between built-ins and external packages. Installing an external Ascend provider
-therefore requires the built-in to be removed or disabled by an explicit,
-documented distribution configuration; there is no implicit override.
+between built-ins and external packages. Today
+`registry._validate_backend_registration()` enforces this for `device_type`
+duplicates, and `tests/platforms/test_plugin_loader.py` pins it.
+
+Installing an external Ascend provider therefore conflicts with the built-in by
+construction. Removing the built-in implicitly is not acceptable, because a
+package upgrade could silently change which implementation runs. Use an explicit,
+documented distribution switch instead:
+
+- Built-ins load first from their own internal registration path
+  (`platforms/builtins.py`), external providers load second.
+- An external provider for an ID already claimed by a built-in is a hard error
+  unless a documented environment switch disables that built-in ID, for example
+  `VLLM_GR_DISABLE_BUILTIN_BACKENDS=ascend`.
+- Diagnostics must name both sources and the switch that suppressed the built-in.
 
 Third-party IDs should use a vendor prefix when they are not the canonical
-implementation. Explicit selection may resolve overlapping platform matches,
-but must never suppress duplicate IDs or select an incompatible platform.
+implementation. Explicit selection may resolve overlapping platform matches, but
+must never suppress duplicate IDs or select an incompatible platform.
 
-## Provider API and runtime ownership
+## Provider contract
 
-The proposed API version is `2`. Keep a small provider contract and compose
-separate execution services instead of introducing a large abstract base class
-with dozens of optional callbacks.
+Introduce an API version and keep the provider small. Compose separate execution
+services instead of a large abstract base class with many optional callbacks.
+
+The immediate change is three additions to the existing five methods, not a new
+six-type API. The remaining contracts are deferred until a second real backend
+exists to constrain them:
 
 ```python
+from collections.abc import Callable
 from typing import Protocol
 
 
-class GRBackendProviderV2(Protocol):
-    descriptor: "BackendDescriptor"
+class GRBackendProvider(Protocol):
+    # New: explicit identity and versioning.
+    backend_id: str          # "cuda" | "ascend" | vendor-prefixed
+    api_version: int         # 2
 
-    def matches(self, platform: "PlatformIdentity") -> bool: ...
+    # New: replace device_type equality with identity matching.
+    def matches(self, identity: "PlatformIdentity") -> bool: ...
 
-    def check_environment(self, context: "ProcessContext") -> "RuntimeReport": ...
-
-    def install_process_hooks(self, context: "ProcessContext") -> "HookReport": ...
-
+    # New: freeze the capability surface once, before workers allocate.
     def resolve(self, request: "BackendRequest") -> "BackendPlan": ...
 
-    def create_runtime(
-        self, context: "RunnerContext", plan: "BackendPlan"
-    ) -> "GRBackendRuntime": ...
+    # Existing, retained.
+    def check_environment(self, context: "ProcessContext") -> "RuntimeReport": ...
+    def install_process_hooks(self, context: "ProcessContext") -> "HookReport": ...
+    def create_model_runner_adapter(self) -> "ModelRunnerAdapter": ...
+    def create_attention_executor(self) -> "AttentionExecutor": ...
+    def create_constrained_topk_execution(
+        self, *, device: "torch.device | str | None" = None
+    ) -> "ConstrainedTopKExecution | None": ...
 ```
 
-The quoted types above are proposed contracts, not existing imports. They have
-the following responsibilities:
+`get_model_runner_hooks()` and `get_attention_execution()` change meaning: they
+must return objects, not modules. This is the precondition for consuming them as
+contracts, and it is why stage 2 of the migration below precedes runner and
+attention dispatch.
 
-| Contract | Responsibility |
+`GRBackendRuntime` and `RunnerContext` from the previous revision are dropped
+from the near-term contract. They describe lifecycle ownership that can be
+expressed with `BackendPlan` plus the existing runner lifecycle; adding them now
+would be guessing an interface with no second consumer.
+
+### Deferred contracts
+
+These are recorded so the migration does not have to redesign them later, but
+they are not part of API version 2:
+
+| Deferred concept | Why deferred |
 | --- | --- |
-| `BackendDescriptor` | API version, backend ID, distribution identity, supported GR/runtime versions, supported upstream platform identities |
-| `ProcessContext` | Process role, initialization phase and selected platform; no request or device-buffer ownership |
-| `BackendRequest` | Normalized GR/model configuration, native runner request, upstream runtime versions, and requested features |
-| `BackendPlan` | Immutable selection of runner adapter, attention paths, graph policy, constraint implementation, and admission limits |
-| `RunnerContext` | Actual Runner, assigned device, engine identity, and model/resource generation |
-| `GRBackendRuntime` | Runner-owned execution services, readiness validation, invalidation, and idempotent cleanup |
+| `GRBackendRuntime` | Runner ownership is already expressed by the native runner lifecycle plus plan invalidation |
+| `RunnerContext` | Only needed once two backends share one runtime factory shape |
+| Per-service factory negotiation | The five services below have distinct shapes; a generic factory hides that |
 
-Provider objects hold descriptors and factories only. Registration and matching
-must not import Torch, vLLM, vendor modules, kernels, or Runner implementations.
-The bridge that reads `current_platform` is the explicit exception: it converts
-the upstream object into the import-light identity. Selected-provider runtime
-imports occur in environment checks, hook installation, or runtime construction
-at the appropriate upstream lifecycle point.
-
-Execution services have narrow responsibilities:
+### Execution services
 
 | Service | Contract boundary | Initial implementations |
 | --- | --- | --- |
-| Runner adapter | Attach to the selected native lifecycle, translate inputs/outputs, preserve native fallback | CUDA V1, CUDA V2, Ascend Runner |
+| Runner adapter | Attach to the selected native lifecycle, translate inputs/outputs, preserve native fallback | CUDA V1, CUDA V2, Ascend runner |
 | Stage executor | Execute and sample GR stages; preserve error propagation and retirement acknowledgments | Existing GPU/NPU stage runners |
-| Attention execution | Prepare device metadata, write KV, run Prefill/Decode using shared logical Beam metadata | CUDA, Ascend cascade/xllm with separate Prefill handling |
+| Attention executor | Prepare device metadata, write KV, run Prefill/Decode using shared logical Beam metadata | CUDA, Ascend cascade/xllm with separate Prefill handling |
 | Graph executor | Validate capture shapes, capture/replay, report actual execution, invalidate and close | CUDA Graph and Ascend ACL Graph adapters |
 | Constraint execution | Preserve canonical tokens, scores, validity and resource identity | Existing constrained Top-K implementations |
 
@@ -228,11 +331,25 @@ adapters during migration. Their upstream private method names are not the
 external provider API. Do not require all future backends to emulate CUDA V1's
 `_prepare_inputs` or `_bookkeeping_sync` methods.
 
+### Provider API version 1 compatibility
+
+`vllm_gr.platform_backends` already has objects that are not versioned. Detect
+them explicitly and never by duck typing:
+
+- Read `getattr(provider, "api_version", 1)`.
+- A version-1 object is mapped through a narrow adapter that requires an exact
+  `device_type` match and applies the fixed aliases `cuda` to NVIDIA CUDA and
+  `npu` to Ascend. It emits a deprecation warning naming the distribution.
+- A version-1 object is never upgraded in place, and its previously optional
+  attributes are never read as evidence of version-2 capability.
+- Explicit backend identity for an arbitrary version-1 third-party `device_type`
+  requires an explicit identity upgrade; there is no inference.
+
 ## Capabilities, configuration, and readiness
 
-Capabilities describe valid combinations, not independent feature booleans.
-For example, support for an NPU graph mode may depend on xllm execution, dtype,
-KV layout, Beam widths, and logical batch size simultaneously.
+Capabilities describe valid combinations, not independent feature booleans. For
+example, support for an NPU graph mode may depend on xllm execution, dtype, KV
+layout, Beam widths, and logical batch size simultaneously.
 
 The plan must capture or validate these dimensions:
 
@@ -249,11 +366,28 @@ Keep the current limits for each existing path until separate implementation and
 validation expand them. A capability for CUDA V2 must not enable the same feature
 on CUDA V1 or Ascend. The CPU selection oracle is not a production CPU backend.
 
+### Plan representation and fingerprint
+
+`resolve()` must return something hashable and comparable, because workers report
+a fingerprint and the engine refuses to start on a mismatch.
+
+- Each backend owns a frozen options dataclass and a declarative table of
+  supported combinations. Validation is table lookup plus explicit rejects, not
+  a chain of independent `if` statements.
+- The fingerprint is a SHA-256 over the normalized plan fields **including the
+  adapter package version**. Without the package version, a wheel upgrade with an
+  unchanged configuration would silently reuse stale compatibility assumptions.
+- `resolve()` must be pure and idempotent. `vllm_gr.plugin.register` runs again on
+  every `EngineArgs` round-trip (`create_engine_config` re-asserts the entry
+  point, GR-PATCH-019), so a stateful or mutating `resolve()` would corrupt the
+  second call. Any memoization must be keyed by normalized input and must not
+  survive a configuration change.
+
 During engine configuration, `resolve()` validates known information and returns
-a frozen plan. Workers then validate actual device/kernel availability and
-perform allocation and warmup. Each worker reports readiness and a stable plan
-fingerprint through startup control flow. The engine starts accepting GR
-requests only after all required participants confirm compatible plans.
+a frozen plan. Workers then validate actual device/kernel availability and perform
+allocation and warmup. Each worker reports readiness and the stable plan
+fingerprint through startup control flow. The engine starts accepting GR requests
+only after all required participants confirm compatible plans.
 
 If a worker cannot satisfy the plan, startup fails. It must not independently
 downgrade to another kernel or mode. Automatic choices are made once and recorded;
@@ -291,22 +425,34 @@ Existing configuration continues to work:
 | Beam and Prefill graph settings/environment variables | Preserve the current path-specific precedence and capture policies |
 | Constraint Table backend selector | Normalize as a constraint execution choice and validate against the selected hardware; do not use it for platform discovery |
 
-During the configuration migration, retire hardware-specific enums as the
-extensibility mechanism for constraint execution. New providers declare their
-supported implementation IDs and option schema; adding one must not require a
-new member in a core CUDA/NPU enum. Legacy values remain accepted through explicit
-normalization to the existing implementations.
-
 If new and legacy settings explicitly disagree, reject the configuration rather
 than choosing silently. Keep `beam.execution_mode="v1"` distinct from native
 ModelRunner V1/V2. Parser cache invalidation and GR config serialization must be
 updated with the owning configuration contract when these fields are implemented.
 
+### Retiring the constraint backend enum
+
+`ConstraintTableBackendEnum` (`config/models.py:46-51`) is currently both a report
+field and a behavior selector: `model_runner_patch.py:171` chooses vocabulary
+slicing for `CUDA`, and `:194` chooses stage vocabulary for `NPU`, while
+`constraints/loader.py:595-652` selects the implementation.
+
+Retire it in two steps rather than in one:
+
+1. Each provider returns a stable `implementation_id: str` plus an optional
+   `legacy_enum` for existing branches. New providers declare their supported
+   implementation IDs; adding one must not require a new member in a core enum.
+2. Only after step 1 is validated on both platforms, remove the behavior branches
+   that consume the enum and reduce it to a historical payload identifier.
+
+Doing both at once understates the work and risks changing constraint results
+silently.
+
 ## Shared scheduling and backend execution
 
-Keep the existing transport: `BeamBatchRequest`, native `SchedulerOutput` with
-GR metadata, and `BeamBatchResult`. `BackendPlan` is startup configuration; it is
-not a new per-step wire message or a frontend-driven execution loop.
+Keep the existing transport: `BeamBatchRequest`, native `SchedulerOutput` with GR
+metadata, and `BeamBatchResult`. `BackendPlan` is startup configuration; it is not
+a new per-step wire message or a frontend-driven execution loop.
 
 GR core owns admission, session state, logical stage dependencies, completion,
 failure, cancellation, and retirement. Native vLLM scheduling continues to own
@@ -315,10 +461,10 @@ resulting execution view and preserve its identities.
 
 Backend-specific admission rules expose a pure shape/feature validation boundary.
 They run before mutating session, native request, or KV state. Shared scheduling
-may use declared capacities and restrictions, but does not inspect hardware
-names, CUDA streams, or ACL graph objects. A fundamentally different scheduling
-algorithm requires a separate scheduler-policy proposal; it must not be hidden
-inside a provider callback.
+may use declared capacities and restrictions, but does not inspect hardware names,
+CUDA streams, or ACL graph objects. A fundamentally different scheduling algorithm
+requires a separate scheduler-policy proposal; it must not be hidden inside a
+provider callback.
 
 ```mermaid
 sequenceDiagram
@@ -345,8 +491,8 @@ Backend completion must not be confused with successful kernel submission.
 Common Beam semantics include item/member order, parent indices, global token
 IDs, score normalization, structural validity, and terminal-result validation.
 Devices may use different fused algorithms and physical representations. Compare
-their results using the existing numerical and tie contracts rather than
-requiring identical intermediate tensor layouts or arbitrary tied-slot order.
+their results using the existing numerical and tie contracts rather than requiring
+identical intermediate tensor layouts or arbitrary tied-slot order.
 
 ## Graph, attention, and resource lifecycle
 
@@ -359,6 +505,20 @@ Do not force generic attention interfaces to expose FlashAttention version numbe
 or a method named `cascade_attention`. Such details belong in CUDA/Ascend adapters.
 The first migration may wrap the existing modules; a later interface can expose
 Prefill/Decode operations without those implementation-specific arguments.
+
+### Attention stage work items
+
+The attention migration has three parts, in this order:
+
+1. Remove module-import-time platform constants from `beam_attn.py`. Constructing
+   the execution module inside `BeamAttentionImpl.__init__` already happens
+   (`beam_attn.py:208-212`), so the module-level `NPU_DEVICE` / `CUDA_DEVICE`
+   constants and every branch on them become instance or factory inputs.
+2. Remove the process-global `_NPU_DECODE_EXECUTION_MODE` cache and take the mode
+   from the resolved plan, so two engines cannot observe different modes.
+3. Split Prefill from Decode selection in the plan, because a backend may
+   intentionally use different kernels for each while sharing one CUSTOM backend
+   registration.
 
 Graph contracts must cover more than a `capture()` hook:
 
@@ -388,16 +548,37 @@ silently retry on another hardware backend. Partial execution is not safe to
 replay as if nothing happened.
 
 Reload and shutdown invalidate model-bound graphs, Attention state, constraint
-resources and output buffers before the native operation can replace them.
-An in-place weight update may retain a graph only when its adapter explicitly
+resources and output buffers before the native operation can replace them. An
+in-place weight update may retain a graph only when its adapter explicitly
 guarantees storage and captured-state validity and has corresponding tests.
 Cleanup is idempotent and also covers failed initialization and failed reload.
 
 ## Initialization and compatibility hooks
 
-General-plugin loading can occur before an engine config or device exists.
-Split initialization into process bootstrap, engine resolution, and worker
-binding instead of reading engine options during module import.
+General-plugin loading can occur before an engine config or device exists. Split
+initialization into process bootstrap, engine resolution, and worker binding
+instead of reading engine options during module import.
+
+```mermaid
+flowchart LR
+    subgraph P1["Phase 1: process bootstrap"]
+        A1["Discover + validate descriptors"]
+        A2["Read PlatformIdentity"]
+        A3["Install minimal idempotent<br/>platform hooks"]
+    end
+    subgraph P2["Phase 2: engine resolution"]
+        B1["resolve(): frozen plan"]
+        B2["Reject unsupported requests"]
+        B3["Environment requirements"]
+    end
+    subgraph P3["Phase 3: worker binding"]
+        C1["Validate assigned device + plan"]
+        C2["Attach runner adapter"]
+        C3["Allocate, load, warm up"]
+        C4["Report readiness + fingerprint"]
+    end
+    P1 --> P2 --> P3 --> EX["Execution: bound services only"]
+```
 
 | Phase | Required behavior |
 | --- | --- |
@@ -406,6 +587,22 @@ binding instead of reading engine options during module import.
 | Worker initialization | Validate assigned device and plan, attach the selected runner adapter, allocate/load resources, warm up and report readiness |
 | Execution | Call already-bound services; no entry-point discovery, reflection, or backend probing per token |
 | Retirement/reload/shutdown | Drain before resource reuse; invalidate relevant bindings and release once |
+
+### Bootstrap cannot be deferred
+
+Plan-driven service binding must not be used as an excuse to move *all* patch
+installation to worker binding. Two existing patches require earlier timing:
+
+- GR-PATCH-019 installs the Ascend `additional_config` sanitizer and the
+  EngineCore-only plan before native construction. vllm-ascend's `AscendConfig`
+  uses `extra="forbid"` and is initialized in the EngineCore child before the GR
+  plugin loads, and separately in the worker before `NPUWorker.__init__`.
+- GR-PATCH-002 wraps `NPUWorker.init_device` so compatibility is installed before
+  the NPU ModelRunner resolves its attention backend.
+
+Therefore phase 1 keeps the present minimal, idempotent, platform-scoped hook set.
+Unifying dispatch and deferring hook installation are separate changes and must
+not be combined.
 
 Preserve non-GR serving on supported runtimes. GR-only feature checks and resources
 are activated by GR configuration. A future unsupported GR backend must fail when
@@ -428,7 +625,23 @@ Retain patch reports and inventory ownership. Repeated initialization verifies
 installed targets rather than blindly stacking wrappers. Registration can be
 atomic, but arbitrary Python patch side effects cannot generally be rolled back:
 a partial installation failure marks initialization failed and requires a clean
-process restart. Update both patch inventory files in each runtime migration PR.
+process restart.
+
+### Machine-readable patch ownership
+
+`docs/runtime_patch_inventory.md` and `docs/patch_inventory.yaml` already record
+owner, installer, activation and removal conditions. Add a `backend:` field to
+every entry so provider ownership is checkable rather than descriptive:
+
+```yaml
+  - id: GR-PATCH-012
+    backend: ascend
+    owner: vllm_gr/v1/worker/npu_model_runner_patch.py
+```
+
+A contract test asserts that every active patch ID is claimed by exactly one
+registered provider, and that a provider's declared IDs exist in the inventory.
+This is what makes "ownership is explicit" verifiable; prose cannot.
 
 ## Package layout and extension contract
 
@@ -454,15 +667,8 @@ vendor_accel = "vllm_gr_vendor.provider:BACKEND"
 
 For API v2, the entry-point name equals `descriptor.backend_id`. Core validates
 descriptor shape and API compatibility before activation. The provider declares
-supported GR and upstream runtime versions; kernel/driver validation occurs in
-the selected environment. Expose installation origin and versions in diagnostics.
-
-For one migration release, a narrow compatibility adapter may accept the current
-unversioned CUDA/NPU provider objects as API v1. Map legacy `cuda` to NVIDIA CUDA
-and `npu` to Ascend explicitly, with strict upstream identity matching. Preserve
-legacy lookups only through that adapter and emit a deprecation notice. Do not
-infer API-v2 capabilities from the presence of old getter methods. Arbitrary
-third-party API-v1 device keys require an explicit identity upgrade.
+supported GR and upstream runtime versions; kernel/driver validation occurs in the
+selected environment. Expose installation origin and versions in diagnostics.
 
 Keep vendor dependencies optional to core. A CUDA install must not import or
 install the Ascend runtime. Share Python interfaces and semantic resources across
@@ -471,7 +677,9 @@ coexist in one environment. Backend wheels/images declare their supported stack.
 
 The built-in Ascend implementation can move to a separate distribution after
 contract and runtime conformance are established. Package extraction is optional
-and does not determine whether the architecture supports external backends.
+and does not determine whether the architecture supports external backends; the
+`VLLM_GR_DISABLE_BUILTIN_BACKENDS` switch above is what makes extraction possible
+without a duplicate-ID error.
 
 ### Adding a third backend
 
@@ -490,27 +698,46 @@ No change to common scheduling or device-name dispatch is required. A hardware
 platform that lacks a necessary semantic operation must reject that GR mode or
 propose a shared contract extension, rather than silently changing its meaning.
 
+### Enforcing the boundary
+
+The completion criterion "no hardware branches in shared dispatch" is currently a
+manual review judgement. Make it machine-checkable with a pre-commit check under
+`tools/pre_commit/`, alongside the existing hooks:
+
+- Outside `vllm_gr/platforms/`, `vllm_gr/backends/`, and an explicit, reviewed
+  exception list, reject `device_type ==`, `is_npu_available`, `is_cuda_available`,
+  `current_platform`, and `torch_npu`.
+- The exception list must name a file, a count, and the migration stage that
+  removes it, so it can only shrink.
+
+Without this guard, branches reappear after the migration completes and the
+boundary silently degrades.
+
 ## Migration plan
 
-Each stage is independently reviewable and preserves existing behavior except
-for the explicit selection errors introduced by the new contract.
+Stages are ordered by value and risk, not by layer depth. Stage 1 is deliberately
+the smallest change that turns dead contract methods into live code, because it
+exposes hidden coupling before any abstraction is widened. It does not wait for
+the identity work.
 
 | Stage | Main files and responsibilities | Exit condition |
 | --- | --- | --- |
-| 1. Identity and API | `platforms/`, current provider tests, configuration parser | CUDA/ROCm collision prevented; duplicate/ambiguous providers fail; import isolation and legacy mapping verified |
-| 2. Bootstrap | `plugin.py`, `_env_check.py`, `patch.py`, `ascend_compat.py` | Environment and hook ownership wired through providers; generic CUSTOM behavior preserved; all process roles covered |
-| 3. Runner and stages | `model_runner_patch.py`, `gr_execution.py`, GPU V1/V2 and NPU adapters | Shared dispatch calls bound services; native execute/sample ordering and retirement remain correct |
-| 4. Attention and constraints | `beam_attn.py`, metadata builders, `constraints/startup.py` | Prefill/Decode selections and KV layouts are coherent; cascade/xllm and constraint semantics preserved |
-| 5. Graph lifecycle | `gr_startup.py`, `prefill_graph_runner.py`, Decode/Prefill graph implementations | Replay, fallback, model reload and resource ownership pass each path's tests |
-| 6. External conformance | Provider packaging, docs, an out-of-tree test provider | Third provider integrates without hardware branches in shared execution; optional Ascend extraction can proceed |
+| 1. Wire the provider | `plugin.py` calls `activate_current_backend()`; `check_environment()` delegates to `provider.check_environment()`; `_apply_patches` delegates Ascend-specific work to `provider.apply_runtime_patches()` | The four currently unwired methods have production callers; `tests/platforms/` still passes; ordinary CUDA and NPU startup unchanged |
+| 2. Getters return adapters | `platforms/cuda.py`, `platforms/npu.py`, `model_runner_patch.py`, `beam_attn.py` | Runner and attention dispatchers consume provider objects; no module-typed `cast` remains |
+| 3. Identity and versioning | `platforms/identity.py`, `registry.py`, `loader.py`, built-in disable switch, v1 compatibility adapter | CUDA/ROCm collision prevented; duplicate and ambiguous providers fail; import isolation and legacy mapping verified |
+| 4. Plan and fingerprint | `platforms/plan.py`, configuration parser, worker readiness report | Known-information validation at engine config; plan mismatch fails startup; `resolve()` proven idempotent across an `EngineArgs` round-trip |
+| 5. Runner and stages | `model_runner_patch.py`, `gr_execution.py`, `gr_startup.py`, GPU V1/V2 and NPU adapters | Shared dispatch calls bound services; native execute/sample ordering and retirement remain correct |
+| 6. Attention and constraints | `beam_attn.py`, metadata builders, `constraints/startup.py`, constraint `implementation_id` | Module-level platform constants and the global mode cache are gone; Prefill/Decode selections and KV layouts are coherent; cascade/xllm and constraint semantics preserved |
+| 7. Graph lifecycle | `gr_startup.py`, `prefill_graph_runner.py`, Decode/Prefill graph implementations | Replay, fallback, model reload and resource ownership pass each path's tests |
+| 8. External conformance | Provider packaging, docs, out-of-tree test provider, boundary lint | Third provider integrates without hardware branches in shared execution; optional Ascend extraction can proceed |
 
-Update owning contracts, examples and `docs/runtime_patch_inventory.md` plus
-`docs/patch_inventory.yaml` alongside every change to actual patch behavior.
-Keep this proposal separate from descriptions of already-supported features.
+Update owning contracts, examples and both patch inventory files alongside every
+change to actual patch behavior. Keep this proposal separate from descriptions of
+already-supported features.
 
 Existing factories can delegate into the new services during migration. Avoid
-keeping two independent selection policies. Roll back a failed migration stage
-as a deployment/release unit; do not switch provider objects in a live process.
+keeping two independent selection policies. Roll back a failed migration stage as
+a deployment/release unit; do not switch provider objects in a live process.
 
 ## Validation and acceptance
 
@@ -548,6 +775,26 @@ The migration is complete when:
 5. Diagnostics report backend/provider versions, runner and attention choices,
    graph policy, initialization failures, and eager fallback reasons without
    adding discovery or device synchronization to the per-token hot path.
+6. The boundary lint is enforced and its exception list is empty or shrinking.
+
+## Review findings and dispositions
+
+Findings raised on the first revision of this proposal, and how the revision
+answers them.
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| 1 | The migration ordered the highest-value, lowest-risk change last | Accepted: wired provider is now stage 1; identity work is stage 3 and runs in parallel |
+| 2 | Six new contracts in the first API revision had no consumer | Accepted: `GRBackendRuntime` and `RunnerContext` deferred; three additions to the existing five methods |
+| 3 | Version-1 and version-2 providers were distinguishable only by duck typing | Accepted: explicit `api_version`, fixed aliases, no capability inference from old attributes |
+| 4 | Built-in and external Ascend providers conflict with no stated switch | Accepted: `VLLM_GR_DISABLE_BUILTIN_BACKENDS` switch plus named sources in diagnostics |
+| 5 | Module-level platform constants in `beam_attn.py` were not in the plan | Accepted: three ordered attention work items; constants and global mode cache are exit conditions |
+| 6 | Bootstrap hook timing was under-specified and would break Ascend | Accepted: phase 1 keeps the current minimal hook set; GR-PATCH-019 and GR-PATCH-002 documented as constraints |
+| 7 | Capability dimensions were listed but the plan had no representation or fingerprint | Accepted: frozen options, declarative combination table, fingerprint including adapter version |
+| 8 | Retiring `ConstraintTableBackendEnum` contradicted "keep current limits" | Accepted: two-step retirement with `implementation_id` first |
+| 9 | Patch ownership was described but not machine-readable | Accepted: `backend:` field in the inventory plus a claiming contract test |
+| 10 | The acceptance criterion was only manually checkable | Accepted: pre-commit boundary check with a shrinking exception list |
+| 11 | `resolve()` was not required to be pure, yet plugin registration re-runs per `EngineArgs` round-trip | Accepted: purity and memoization constraints added to the plan contract |
 
 ## References
 

@@ -16,6 +16,20 @@ The worker and attention dispatchers also select their implementations directly;
 the two provider getters describe available modules but do not replace those
 dispatchers.
 
+The wiring status of each provider method is:
+
+| Provider method | Production caller | Status |
+| --- | --- | --- |
+| `create_constrained_topk_execution()` | `constraints/startup.py` | Wired |
+| `check_environment()` | none | Unwired; `_env_check.check_environment()` decides directly |
+| `apply_runtime_patches()` | none | Unwired; `patch._apply_patches()` decides directly |
+| `get_model_runner_hooks()` | none | Unwired; `model_runner_patch` decides directly |
+| `get_attention_execution()` | none | Unwired; `beam_attn` decides directly |
+
+The two getters additionally return module objects rather than adapters that
+satisfy the declared protocols, so a caller cannot consume them as contracts.
+Returning adapter objects is a separate migration stage.
+
 The [multi-hardware design proposal](multi_backend_design.md) describes a future
 versioned backend identity and execution boundary. Its proposed interfaces and
 configuration are not part of the current contract below.
