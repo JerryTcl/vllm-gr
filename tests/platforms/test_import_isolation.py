@@ -84,8 +84,12 @@ import vllm.platforms
 from vllm.platforms.interface import Platform
 
 # Synthetic device identity: exercise host initialization, not CUDA execution.
+# The identity carries the upstream enum and class lineage, so provider
+# selection never has to infer CUDA from tensor placement alone.
 platform = Platform()
+platform._enum = "CUDA"
 platform.device_type = "cuda"
+platform.device_name = "cuda"
 vllm.platforms.current_platform = platform
 from vllm_gr.platforms import loader
 loader.entry_points = lambda **kwargs: ()
