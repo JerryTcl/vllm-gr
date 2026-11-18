@@ -30,19 +30,22 @@ from vllm_gr.v1.beam.batch_contracts import (
     BeamBatchResult,
     BeamOutputOptions,
 )
-from vllm_gr.v1.engine.beam_search_v1 import (
+from vllm_gr.v1.beam.dispatch import (
+    GR_STAGE_OUTPUT_ATTR,
+    GR_WORKER_RESULT_ATTR,
     GRDeviceStateRef,
-    GRResourceStatus,
-    GRSessionStatus,
     GRStageKind,
     GRWorkerResult,
 )
-from vllm_gr.v1.engine.core import _handle_submit_gr_session
-from vllm_gr.v1.engine.core_client import (
-    submit_gr_session_async as submit_gr_session_to_core_async,
+from vllm_gr.v1.core.sched.gr_async_scheduler import (
+    GRAdmissionError,
+    _gr_session_ready_to_finalize,
+    add_gr_session,
+    attach_gr_stage_metadata,
+    can_issue_gr_stage,
+    update_gr_from_output,
 )
-from vllm_gr.v1.engine.core_client_patch import sync_mp_submit_gr_session
-from vllm_gr.v1.engine.engine_core_patch import (
+from vllm_gr.v1.core.sched.scheduler_patch import (
     _GR_FINALIZING_IDS_ATTR,
     _expand_gr_abort_request_ids,
     _finalize_ready_gr_session,
@@ -51,16 +54,12 @@ from vllm_gr.v1.engine.engine_core_patch import (
     _sync_gr_sessions_after_native_finish,
     apply_scheduler_patch,
 )
-from vllm_gr.v1.engine.gr_async_scheduler import (
-    GR_STAGE_OUTPUT_ATTR,
-    GR_WORKER_RESULT_ATTR,
-    GRAdmissionError,
-    _gr_session_ready_to_finalize,
-    add_gr_session,
-    attach_gr_stage_metadata,
-    can_issue_gr_stage,
-    update_gr_from_output,
+from vllm_gr.v1.core.sched.session import GRResourceStatus, GRSessionStatus
+from vllm_gr.v1.engine.core import _handle_submit_gr_session
+from vllm_gr.v1.engine.core_client import (
+    submit_gr_session_async as submit_gr_session_to_core_async,
 )
+from vllm_gr.v1.engine.core_client_patch import sync_mp_submit_gr_session
 from vllm_gr.v1.engine.gr_session_client import (
     SyncGRSessionHandle,
     _terminal_result,
@@ -155,7 +154,7 @@ def test_scheduler_patch_processes_subclass_super_chain_once(
 
     from vllm.v1.core.sched import scheduler as scheduler_module
 
-    from vllm_gr.v1.engine import gr_async_scheduler
+    from vllm_gr.v1.core.sched import gr_async_scheduler
 
     native_calls: list[tuple[str, bool]] = []
     retirement_calls: list[object] = []
@@ -1154,7 +1153,7 @@ def test_dispatch_lease_preserves_native_eviction_order(
 
 
 def test_async_output_cache_never_hashes_generated_placeholders() -> None:
-    from vllm_gr.v1.engine.gr_async_scheduler import _install_gr_prompt_cache_guard
+    from vllm_gr.v1.core.sched.gr_async_scheduler import _install_gr_prompt_cache_guard
 
     calls: list[int] = []
     scheduler = SimpleNamespace(

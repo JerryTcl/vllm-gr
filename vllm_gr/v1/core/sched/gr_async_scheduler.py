@@ -13,29 +13,33 @@ from vllm_gr.v1.beam.batch_contracts import (
     BeamBatchRequest,
     BeamBatchResult,
 )
-from vllm_gr.v1.engine.beam_search_v1 import (
+from vllm_gr.v1.beam.dispatch import (
+    GR_BATCH_RESULT_ATTR,
+    GR_RETIRE_OUTPUT_ATTR,
+    GR_RETIRE_RESULT_ATTR,
+    GR_STAGE_OUTPUT_ATTR,
+    GR_WORKER_RESULT_ATTR,
     GRDeviceStateRef,
     GRExecutionCapacity,
-    GRResourceStatus,
     GRRetireMetadata,
     GRRetireResult,
-    GRSessionState,
-    GRSessionStatus,
-    GRStageCompletion,
     GRStageKind,
     GRStageMetadata,
     GRWorkerResult,
+)
+from vllm_gr.v1.core.sched.session import (
+    GRResourceStatus,
+    GRSessionState,
+    GRSessionStatus,
+    GRStageCompletion,
+)
+from vllm_gr.v1.engine.beam_search_v1 import (
     validate_gr_device_config,
     validate_gr_execution_config,
     validate_gr_request,
 )
 
-GR_STAGE_OUTPUT_ATTR = "gr_stage_metadata"
-GR_WORKER_RESULT_ATTR = "gr_worker_results"
-GR_BATCH_RESULT_ATTR = "gr_batch_results"
 GR_LOOKAHEAD_DEPTH = 2
-GR_RETIRE_OUTPUT_ATTR = "gr_retire_metadata"
-GR_RETIRE_RESULT_ATTR = "gr_retire_result"
 _DRAINING_STATUSES = frozenset(
     {
         GRSessionStatus.FINISHING,

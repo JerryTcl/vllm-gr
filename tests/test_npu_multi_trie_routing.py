@@ -273,8 +273,8 @@ def test_npu_core_rejects_invalid_later_member_before_queueing_and_accepts_retry
     import msgspec
 
     from tests.test_gr_async_scheduler import _multi_batch_request
+    from vllm_gr.v1.core.sched.gr_async_scheduler import GRAdmissionError
     from vllm_gr.v1.engine.core import _handle_submit_gr_session
-    from vllm_gr.v1.engine.gr_async_scheduler import GRAdmissionError
     from vllm_gr.v1.engine.wire import register_engine_core_request_types
 
     register_engine_core_request_types()

@@ -67,7 +67,7 @@ def _handle_submit_gr_session(self, batch_request) -> None:
     except ValueError as error:
         # A malformed batch is a request rejection, not a preprocessing fault.
         if getattr(self, "output_queue", None) is None:
-            from vllm_gr.v1.engine.gr_async_scheduler import GRAdmissionError
+            from vllm_gr.v1.core.sched.gr_async_scheduler import GRAdmissionError
 
             raise GRAdmissionError(str(error)) from error
         send_gr_rejection(self, batch_request.items[0].request, str(error))
@@ -110,7 +110,7 @@ def _admit_gr_session(self, batch_request) -> None:
         # In-process callers have no output socket, so the rejection travels
         # to them as the exception the multiprocess handler encodes.
         if getattr(self, "output_queue", None) is None:
-            from vllm_gr.v1.engine.gr_async_scheduler import GRAdmissionError
+            from vllm_gr.v1.core.sched.gr_async_scheduler import GRAdmissionError
 
             raise GRAdmissionError(str(error)) from error
         send_gr_rejection(self, engine_requests[0], str(error))
@@ -140,7 +140,7 @@ def _admit_gr_session(self, batch_request) -> None:
         # contract as shared validation. Deployment faults still use the
         # preprocessing handler below.
         if getattr(self, "output_queue", None) is None:
-            from vllm_gr.v1.engine.gr_async_scheduler import GRAdmissionError
+            from vllm_gr.v1.core.sched.gr_async_scheduler import GRAdmissionError
 
             raise GRAdmissionError(str(error)) from error
         send_gr_rejection(self, engine_requests[0], str(error))

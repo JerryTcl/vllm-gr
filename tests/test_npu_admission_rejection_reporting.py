@@ -33,12 +33,12 @@ from vllm_gr.v1.beam.batch_contracts import (
     BeamOutputOptions,
     admission_rejection,
 )
+from vllm_gr.v1.core.sched.gr_async_scheduler import GRAdmissionError
 from vllm_gr.v1.engine.core import (
     _admit_gr_session,
     _handle_submit_gr_session,
     dispatch_gr_engine_core_input,
 )
-from vllm_gr.v1.engine.gr_async_scheduler import GRAdmissionError
 from vllm_gr.v1.engine.wire import register_engine_core_request_types
 
 REASON = (

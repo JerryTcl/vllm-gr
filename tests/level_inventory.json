@@ -2860,6 +2860,7 @@
     "tests/test_patch_initialization.py::test_hash_memos_survive_varied_traffic_beyond_capacity": "l1",
     "tests/test_patch_initialization.py::test_initialization_applies_required_patch_once": "l1",
     "tests/test_patch_initialization.py::test_kv_hash_memo_patch_equivalence_and_hits": "l1",
+    "tests/test_patch_initialization.py::test_kv_hash_memo_plan_repairs_partial_install": "l1",
     "tests/test_patch_initialization.py::test_model_runner_verifier_checks_shared_discovery_set": "l1",
     "tests/test_patch_initialization.py::test_npu_spawn_patch_forces_spawn_only_when_npu_initialized": "l1",
     "tests/test_patch_initialization.py::test_npu_spawn_patch_wraps_upstream_force_spawn_and_both_bindings": "l1",
