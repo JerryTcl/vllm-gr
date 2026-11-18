@@ -4,6 +4,7 @@
 
 """Beam attention over a shared paged prefix and persistent per-beam suffix KV."""
 
+import functools
 import os
 from types import ModuleType
 from typing import Any, ClassVar
@@ -122,17 +123,21 @@ _DENSE_PREFILL_MODES = ("fa2", "cudnn")
 def _resolve_dense_prefill_mode() -> str | None:
     """Opt-in dense CUDA Prefill mode, or None to keep the paged path.
 
-    Captured Prefill graphs hold fresh prompts only when prefix caching and
-    chunked Prefill are both off; otherwise a request can carry cached context
-    that only the paged cache holds, so the mode is ignored.
+    Captured Prefill graphs hold fresh prompts only when prefix caching,
+    chunked Prefill and KV connectors are all off; otherwise a request can carry
+    context that only the paged cache holds, so the mode is ignored. Each call
+    still checks its CPU lengths (eager batches and non-Beam decode rows also
+    reach the Prefill entry).
     """
     raw = os.environ.get(ENV_DENSE_PREFILL, "off").strip().lower()
     if not CUDA_DEVICE or raw in ("", "off"):
         return None
     if raw not in _DENSE_PREFILL_MODES:
-        logger.warning(
-            "vllm_gr: ignoring %s=%s (expected off, fa2 or cudnn)", ENV_DENSE_PREFILL, raw
-        )
+        _warn_invalid_dense_prefill_mode(raw)
+        return None
+    if envs.VLLM_BATCH_INVARIANT:
+        # The paged path pins num_splits=1; cuDNN-vs-FA2 selection by request
+        # count would make results depend on batch composition.
         return None
     from vllm.config import get_current_vllm_config_or_none
 
@@ -141,9 +146,17 @@ def _resolve_dense_prefill_mode() -> str | None:
         config is None
         or config.cache_config.enable_prefix_caching
         or config.scheduler_config.enable_chunked_prefill
+        # A KV connector can load earlier prompt tokens into the paged cache.
+        or getattr(config, "kv_transfer_config", None) is not None
     ):
         return None
     return raw
+
+
+@functools.lru_cache(maxsize=8)
+def _warn_invalid_dense_prefill_mode(raw: str) -> None:
+    # Resolved once per attention layer; warn once per process.
+    logger.warning("vllm_gr: ignoring %s=%s (expected off, fa2 or cudnn)", ENV_DENSE_PREFILL, raw)
 
 
 def _dense_prefill_kwargs(
@@ -157,8 +170,8 @@ def _dense_prefill_kwargs(
     mode = getattr(impl, "_dense_prefill_mode", None)
     if (
         mode is None
-        # The paged path attends over quantized K/V; keep FP8 numerics.
-        or str(getattr(impl, "kv_cache_dtype", "auto")).startswith("fp8")
+        # The paged path attends over quantized K/V; keep its numerics.
+        or is_quantized_kv_cache(getattr(impl, "kv_cache_dtype", "auto"))
         or key is None
         or value is None
         or getattr(impl, "kv_sharing_target_layer_name", None) is not None

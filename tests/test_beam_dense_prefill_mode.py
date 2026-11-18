@@ -8,10 +8,11 @@ import pytest
 from vllm_gr.v1.attention.backends import beam_attn
 
 
-def _config(prefix_caching=False, chunked=False):
+def _config(prefix_caching=False, chunked=False, kv_transfer=None):
     return SimpleNamespace(
         cache_config=SimpleNamespace(enable_prefix_caching=prefix_caching),
         scheduler_config=SimpleNamespace(enable_chunked_prefill=chunked),
+        kv_transfer_config=kv_transfer,
     )
 
 
@@ -27,11 +28,14 @@ def _config(prefix_caching=False, chunked=False):
         # Cached context lives only in the paged cache.
         ("cudnn", True, _config(prefix_caching=True), None),
         ("cudnn", True, _config(chunked=True), None),
+        ("cudnn", True, _config(kv_transfer=SimpleNamespace(kv_connector="X")), None),
         ("cudnn", True, None, None),
     ],
 )
 def test_dense_prefill_mode_requires_fresh_prompts(monkeypatch, raw, cuda, config, expected):
     import vllm.config
+
+    monkeypatch.setattr(beam_attn.envs, "VLLM_BATCH_INVARIANT", False)
 
     if raw is None:
         monkeypatch.delenv(beam_attn.ENV_DENSE_PREFILL, raising=False)
@@ -42,12 +46,25 @@ def test_dense_prefill_mode_requires_fresh_prompts(monkeypatch, raw, cuda, confi
     assert beam_attn._resolve_dense_prefill_mode() == expected
 
 
+def test_dense_prefill_mode_off_when_batch_invariant(monkeypatch):
+    import vllm.config
+
+    monkeypatch.setenv(beam_attn.ENV_DENSE_PREFILL, "cudnn")
+    monkeypatch.setattr(beam_attn, "CUDA_DEVICE", True)
+    monkeypatch.setattr(vllm.config, "get_current_vllm_config_or_none", _config)
+    monkeypatch.setattr(beam_attn.envs, "VLLM_BATCH_INVARIANT", True)
+    assert beam_attn._resolve_dense_prefill_mode() is None
+    monkeypatch.setattr(beam_attn.envs, "VLLM_BATCH_INVARIANT", False)
+    assert beam_attn._resolve_dense_prefill_mode() == "cudnn"
+
+
 @pytest.mark.parametrize(
     "changes,forwards",
     [
         ({}, True),
         ({"_dense_prefill_mode": None}, False),
         ({"kv_cache_dtype": "fp8_e4m3"}, False),
+        ({"kv_cache_dtype": "fp8"}, False),
         ({"kv_sharing_target_layer_name": "layers.0.attn"}, False),
     ],
 )

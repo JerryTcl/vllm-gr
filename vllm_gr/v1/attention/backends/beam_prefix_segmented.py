@@ -10,6 +10,9 @@ import triton.language as tl
 
 from vllm_gr.v1.attention.backends.beam_attention_state import AttentionState
 
+# Elements per merge program; the launch grid and the kernel must agree.
+_MERGE_BLOCK = 256
+
 
 @triton.jit
 def _prepare(
@@ -171,7 +174,7 @@ def segmented_prefix(
     )
     result = torch.empty_like(query, memory_format=torch.contiguous_format)
     result_lse = torch.empty((heads, tokens), dtype=torch.float32, device=query.device)
-    _merge[(batch, heads, triton.cdiv(max_query * dim, 256))](
+    _merge[(batch, heads, triton.cdiv(max_query * dim, _MERGE_BLOCK))](
         out,
         lse,
         cu_query,
@@ -185,6 +188,6 @@ def segmented_prefix(
         chunk * key.shape[1],
         *out.stride(),
         *lse.stride(),
-        256,
+        _MERGE_BLOCK,
     )
     return AttentionState(result, result_lse)

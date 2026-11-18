@@ -41,10 +41,14 @@ layer's freshly projected contiguous K/V with the dense FA2 kernel;
 least 64 tokens and dense FA2 otherwise. The KV cache is still written. The
 default `off` keeps the paged path.
 
-The mode applies only when prefix caching and chunked Prefill are both disabled,
-because only then does every captured Prefill hold a fresh prompt whose K/V rows
-align with its query rows. Layers with sliding windows, ALiBi, softcap, sinks
-or an FP8 KV cache keep the paged path, as do eager (uncaptured) Prefill and NPU.
+The mode applies only when prefix caching, chunked Prefill and KV connectors
+are all disabled, because only then does every captured Prefill hold a fresh
+prompt whose K/V rows align with its query rows. Each call also checks the CPU
+lengths: the pure-Prefill entry also serves eager batches and non-Beam decode
+rows, and any request whose context is longer than its scheduled tokens keeps
+the whole batch on the paged path. `VLLM_BATCH_INVARIANT`, layers with sliding
+windows, ALiBi, softcap or sinks, quantized KV caches, KV sharing and NPU also
+keep the paged path. If cuDNN cannot serve the shape, dense FA2 is used.
 
 ## ModelRunner V2: use the native capture plan
 

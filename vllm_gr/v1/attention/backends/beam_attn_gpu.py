@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+import functools
 from copy import copy
 from typing import Any, NoReturn, cast
 
 import torch
 from vllm import envs
+from vllm.logger import init_logger
 from vllm.v1.attention.backends.fa_utils import (
     get_flash_attn_version as _get_flash_attn_version,
 )
@@ -26,6 +28,8 @@ from vllm_gr.v1.attention.backends.beam_attn_metadata import (
     require_beam_decode_session,
     resolve_beam_pool,
 )
+
+logger = init_logger(__name__)
 
 if is_flash_attn_varlen_func_available():
     from vllm.v1.attention.backends.fa_utils import (
@@ -235,6 +239,30 @@ def reshape_and_cache(
 _CUDNN_DENSE_MIN_TOKENS = 64
 
 
+def _all_fresh_prompts(attn_metadata: Any) -> bool:
+    """Whether every request's K/V context is exactly its scheduled tokens.
+
+    The pure-Prefill metadata also serves eager batches and non-Beam decode
+    rows, whose earlier tokens live only in the paged cache. Missing CPU
+    mirrors count as "not fresh" so the paged path stays the default.
+    """
+    starts = getattr(attn_metadata, "query_start_loc_cpu", None)
+    lengths = getattr(attn_metadata, "seq_lens_cpu", None)
+    num_reqs = getattr(attn_metadata, "num_reqs", 0)
+    if not num_reqs or starts is None or lengths is None:
+        return False
+    if len(starts) < num_reqs + 1 or len(lengths) < num_reqs:
+        return False
+    return all(lengths[i] == starts[i + 1] - starts[i] for i in range(num_reqs))
+
+
+@functools.lru_cache(maxsize=1)
+def _warn_cudnn_unavailable(reason: str) -> None:
+    logger.warning(
+        "vllm_gr: cuDNN dense Prefill unavailable (%s); using dense FA2", reason.splitlines()[0]
+    )
+
+
 def _dense_prefill_attention(
     output: torch.Tensor,
     query: torch.Tensor,
@@ -265,6 +293,7 @@ def _dense_prefill_attention(
         or logits_soft_cap
         or (sliding_window_size is not None and tuple(sliding_window_size) != (-1, -1))
         or key.dtype != query.dtype
+        or not _all_fresh_prompts(attn_metadata)
     ):
         return False
     tokens = query.shape[0]
@@ -279,17 +308,23 @@ def _dense_prefill_attention(
         import torch.nn.functional as F
         from torch.nn.attention import SDPBackend, sdpa_kernel
 
-        with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
-            out = F.scaled_dot_product_attention(
-                query.unsqueeze(0).transpose(1, 2),
-                key.unsqueeze(0).transpose(1, 2),
-                value.unsqueeze(0).transpose(1, 2),
-                is_causal=True,
-                scale=scale,
-                enable_gqa=True,
-            )
-        output[:tokens] = out[0].transpose(0, 1)
-        return True
+        try:
+            with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+                out = F.scaled_dot_product_attention(
+                    query.unsqueeze(0).transpose(1, 2),
+                    key.unsqueeze(0).transpose(1, 2),
+                    value.unsqueeze(0).transpose(1, 2),
+                    is_causal=True,
+                    scale=scale,
+                    enable_gqa=True,
+                )
+        except RuntimeError as error:
+            # Backend selection fails before any launch when this torch/cuDNN
+            # build cannot serve the shape; dense FA2 below still applies.
+            _warn_cudnn_unavailable(str(error))
+        else:
+            output[:tokens] = out[0].transpose(0, 1)
+            return True
     cu_seqlens_q = attn_metadata.query_start_loc
     max_q_len = attn_metadata.max_query_len
     output[:tokens] = flash_attn_varlen_func(

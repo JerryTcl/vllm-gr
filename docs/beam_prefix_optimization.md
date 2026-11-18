@@ -52,9 +52,14 @@ split probe fits the block table for any `max_model_len`.
 A plan is installed only when the model predicts at least a 5% win and the
 unsplit chain is at least 1.5x above the reachable floor, so compute-bound
 wide-beam shapes stay native. The unsplit chain must also reach 150 us, a bound
-measured on L20 for 1024/B1/W128. `VLLM_GR_PREFIX_MIN_CHAIN_US` overrides it;
-on RTX PRO 6000 a value of 8 lets W=64 prefixes of 512-4096 tokens split, where
-native FA2 launches only `heads` CTAs per request.
+measured on L20 for 1024/B1/W128. `VLLM_GR_PREFIX_MIN_CHAIN_US` overrides it
+with a finite value >= 0; other values log a warning and keep 150. On RTX PRO
+6000 a value of 8 lets W=64 prefixes of 512-4096 tokens split, where native FA2
+launches only `heads` CTAs per request.
+
+The file records a schema version that changes whenever a measured kernel
+changes cost; entries from another schema are ignored and re-measured. Schema 2
+follows the per-tile merge, whose per-segment overhead is far lower.
 
 `VLLM_GR_PREFIX_CALIBRATION=off` skips measurement and `VLLM_GR_PREFIX_POLICY=off`
 disables the whole segmentation path; delete the file to re-measure. Every

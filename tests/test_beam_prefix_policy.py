@@ -501,9 +501,36 @@ def test_min_chain_override_admits_short_prefix(monkeypatch, tmp_path):
     monkeypatch.setenv(policy.ENV_MIN_CHAIN_US, "8")
     plan = policy.resolve_prefix_plan(shape, **args)
     assert plan is not None and plan.fa_version == 2 and plan.segments > 1
-    # An unparsable override keeps the conservative default.
-    monkeypatch.setenv(policy.ENV_MIN_CHAIN_US, "fast")
-    assert policy.resolve_prefix_plan(shape, **args) is None
+    # Unparsable, non-finite or negative overrides keep the conservative default.
+    for invalid in ("fast", "nan", "inf", "-1"):
+        monkeypatch.setenv(policy.ENV_MIN_CHAIN_US, invalid)
+        assert policy._min_chain_us() == policy.MIN_CHAIN_US
+        assert policy.resolve_prefix_plan(shape, **args) is None
+
+
+@pytest.mark.l1
+def test_calibration_from_older_schema_is_remeasured(monkeypatch, tmp_path):
+    """Schema-1 coefficients were measured with the serial merge kernel."""
+    import yaml
+
+    path = tmp_path / "calib.yaml"
+    monkeypatch.setenv(policy.ENV_CALIBRATION_PATH, str(path))
+    fingerprint = {"name": "NVIDIA L20", "capability": [8, 9], "sm_count": 92}
+    other = {"name": "NVIDIA H20", "capability": [9, 0], "sm_count": 78}
+    geometry = {"heads": 16, "kv_heads": 8, "dim": 128, "dtype": "torch.bfloat16", "block_size": 16}
+    calibration = policy.PrefixCalibration(31.6, 9.3e-5, 6.8e-3, 4.0)
+    policy.store_calibration(fingerprint, geometry, calibration)
+    policy.store_calibration(other, geometry, calibration)
+    assert policy.load_calibration(fingerprint, geometry) == calibration
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert data["schema"] == policy.CALIBRATION_SCHEMA
+    data["schema"] = 1
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert policy.load_calibration(fingerprint, geometry) is None
+    # Re-measuring one device must not carry stale entries of other devices forward.
+    policy.store_calibration(fingerprint, geometry, calibration)
+    assert policy.load_calibration(fingerprint, geometry) == calibration
+    assert policy.load_calibration(other, geometry) is None
 
 
 @pytest.mark.l1
