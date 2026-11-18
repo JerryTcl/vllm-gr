@@ -32,6 +32,20 @@ opt-in behavior. V1 async GR Prefill also retains its original requirement
 that native input tensors have the actual scheduled token length. GR can
 pad its own static buffers after admission.
 
+## Dense CUDA Prefill (opt-in)
+
+Captured CUDA Prefill attention reads K/V from the paged cache, which selects
+FA2's split-KV kernel. `VLLM_GR_DENSE_PREFILL=fa2` instead attends over the
+layer's freshly projected contiguous K/V with the dense FA2 kernel;
+`VLLM_GR_DENSE_PREFILL=cudnn` uses cuDNN SDPA for single-request Prefill of at
+least 64 tokens and dense FA2 otherwise. The KV cache is still written. The
+default `off` keeps the paged path.
+
+The mode applies only when prefix caching and chunked Prefill are both disabled,
+because only then does every captured Prefill hold a fresh prompt whose K/V rows
+align with its query rows. Layers with sliding windows, ALiBi, softcap, sinks
+or an FP8 KV cache keep the paged path, as do eager (uncaptured) Prefill and NPU.
+
 ## ModelRunner V2: use the native capture plan
 
 V2 consumes the resolved `compilation_config.cudagraph_capture_sizes` list.

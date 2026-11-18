@@ -4,8 +4,9 @@
 
 """Beam attention over a shared paged prefix and persistent per-beam suffix KV."""
 
+import os
 from types import ModuleType
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import torch
 from vllm import envs
@@ -114,6 +115,58 @@ def _get_platform_execution_module() -> ModuleType:
     )
 
 
+ENV_DENSE_PREFILL = "VLLM_GR_DENSE_PREFILL"
+_DENSE_PREFILL_MODES = ("fa2", "cudnn")
+
+
+def _resolve_dense_prefill_mode() -> str | None:
+    """Opt-in dense CUDA Prefill mode, or None to keep the paged path.
+
+    Captured Prefill graphs hold fresh prompts only when prefix caching and
+    chunked Prefill are both off; otherwise a request can carry cached context
+    that only the paged cache holds, so the mode is ignored.
+    """
+    raw = os.environ.get(ENV_DENSE_PREFILL, "off").strip().lower()
+    if not CUDA_DEVICE or raw in ("", "off"):
+        return None
+    if raw not in _DENSE_PREFILL_MODES:
+        logger.warning(
+            "vllm_gr: ignoring %s=%s (expected off, fa2 or cudnn)", ENV_DENSE_PREFILL, raw
+        )
+        return None
+    from vllm.config import get_current_vllm_config_or_none
+
+    config = get_current_vllm_config_or_none()
+    if (
+        config is None
+        or config.cache_config.enable_prefix_caching
+        or config.scheduler_config.enable_chunked_prefill
+    ):
+        return None
+    return raw
+
+
+def _dense_prefill_kwargs(
+    impl: Any, key: torch.Tensor | None, value: torch.Tensor | None
+) -> dict[str, Any]:
+    """Fresh K/V for the dense Prefill, or nothing to keep the paged path.
+
+    Uses getattr defaults because tests and wrappers drive ``prefill_forward``
+    with partially constructed implementations.
+    """
+    mode = getattr(impl, "_dense_prefill_mode", None)
+    if (
+        mode is None
+        # The paged path attends over quantized K/V; keep FP8 numerics.
+        or str(getattr(impl, "kv_cache_dtype", "auto")).startswith("fp8")
+        or key is None
+        or value is None
+        or getattr(impl, "kv_sharing_target_layer_name", None) is not None
+    ):
+        return {}
+    return {"dense_key": key, "dense_value": value, "dense_mode": mode}
+
+
 class BeamAttentionImpl(AttentionImpl):
     can_return_lse_for_decode: bool = True
 
@@ -188,6 +241,7 @@ class BeamAttentionImpl(AttentionImpl):
         self.num_heads = num_heads
         self.head_size = head_size
         self.scale = float(scale)
+        self._dense_prefill_mode = _resolve_dense_prefill_mode()
         self.num_kv_heads = num_kv_heads
         if alibi_slopes is not None:
             alibi_slopes = torch.tensor(alibi_slopes, dtype=torch.float32)
@@ -537,6 +591,7 @@ class BeamAttentionImpl(AttentionImpl):
         vllm_flash_attn_version: int,
         s_aux: torch.Tensor | None = None,
         alibi_slopes: torch.Tensor | None = None,
+        **dense_kwargs,
     ) -> None:
         # The prefill path is never serviced by the xllm module (decode-only
         # by design): on NPU resolve the cascade module directly so the
@@ -560,6 +615,7 @@ class BeamAttentionImpl(AttentionImpl):
             vllm_flash_attn_version=vllm_flash_attn_version,
             s_aux=s_aux,
             alibi_slopes=alibi_slopes,
+            **dense_kwargs,
         )
 
     def prefill_forward(
@@ -676,6 +732,8 @@ class BeamAttentionImpl(AttentionImpl):
                 )
                 return output
 
+        # Dense Prefill is CUDA-only; NPU never resolves the helper.
+        dense_kwargs = _dense_prefill_kwargs(self, key, value) if CUDA_DEVICE else {}
         self.prefill_attention(
             output=output,
             query=query,
@@ -688,6 +746,7 @@ class BeamAttentionImpl(AttentionImpl):
             vllm_flash_attn_version=self.prefill_flash_attn_version,
             s_aux=self.sinks,
             alibi_slopes=self.alibi_slopes,
+            **dense_kwargs,
         )
 
         return output

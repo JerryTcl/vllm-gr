@@ -230,6 +230,83 @@ def reshape_and_cache(
     )
 
 
+# Minimum token count for the cuDNN dense Prefill; cuDNN SDPA rejects
+# single-token K/V and short shapes gain nothing over FA2.
+_CUDNN_DENSE_MIN_TOKENS = 64
+
+
+def _dense_prefill_attention(
+    output: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_metadata: Any,
+    *,
+    scale: float,
+    mode: str,
+    causal: bool,
+    sliding_window_size: list[int] | tuple[int, int] | None,
+    logits_soft_cap: float,
+    s_aux: torch.Tensor | None,
+    alibi_slopes: torch.Tensor | None,
+) -> bool:
+    """Attend over the contiguous fresh K/V instead of the paged cache.
+
+    Without cached context, request K/V rows align with its query rows, so
+    ``cu_seqlens_k == cu_seqlens_q``. Reading the paged cache forces FA2's
+    split-KV kernel (BlockM=64); the dense FA2 kernel (BlockM=128) and cuDNN
+    are faster on long prompts. Returns False when the layer configuration is
+    unsupported, leaving the caller on the paged path.
+    """
+    if (
+        not causal
+        or alibi_slopes is not None
+        or s_aux is not None
+        or logits_soft_cap
+        or (sliding_window_size is not None and tuple(sliding_window_size) != (-1, -1))
+        or key.dtype != query.dtype
+    ):
+        return False
+    tokens = query.shape[0]
+    key, value = key[:tokens], value[:tokens]
+    if (
+        mode == "cudnn"
+        and getattr(attn_metadata, "num_reqs", 0) == 1
+        and tokens >= _CUDNN_DENSE_MIN_TOKENS
+    ):
+        # One request: padded tail rows past cu_seqlens_q[-1] come after every
+        # real row, so causal masking keeps them out of the real outputs.
+        import torch.nn.functional as F
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+
+        with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+            out = F.scaled_dot_product_attention(
+                query.unsqueeze(0).transpose(1, 2),
+                key.unsqueeze(0).transpose(1, 2),
+                value.unsqueeze(0).transpose(1, 2),
+                is_causal=True,
+                scale=scale,
+                enable_gqa=True,
+            )
+        output[:tokens] = out[0].transpose(0, 1)
+        return True
+    cu_seqlens_q = attn_metadata.query_start_loc
+    max_q_len = attn_metadata.max_query_len
+    output[:tokens] = flash_attn_varlen_func(
+        q=query,
+        k=key,
+        v=value,
+        cu_seqlens_q=cu_seqlens_q,
+        cu_seqlens_k=cu_seqlens_q,
+        max_seqlen_q=max_q_len,
+        max_seqlen_k=max_q_len,
+        softmax_scale=scale,
+        causal=True,
+        fa_version=2,
+    )
+    return True
+
+
 def prefill_attention(
     output: torch.Tensor,
     query: torch.Tensor,
@@ -242,8 +319,16 @@ def prefill_attention(
     vllm_flash_attn_version: int,
     s_aux: torch.Tensor | None = None,
     alibi_slopes: torch.Tensor | None = None,
+    dense_key: torch.Tensor | None = None,
+    dense_value: torch.Tensor | None = None,
+    dense_mode: str | None = None,
 ) -> None:
-    """Dedicated pure prefill attention execution for the prefill graph path."""
+    """Dedicated pure prefill attention execution for the prefill graph path.
+
+    ``dense_key``/``dense_value`` are this layer's freshly projected K/V. The
+    caller passes them only when every captured Prefill is a fresh prompt (no
+    prefix caching, no chunked Prefill); see ``_dense_prefill_attention``.
+    """
     cu_seqlens_q = getattr(attn_metadata, "query_start_loc", None)
     max_q_len = getattr(attn_metadata, "max_query_len", 0)
     seqused_k = getattr(attn_metadata, "seq_lens", None)
@@ -262,6 +347,23 @@ def prefill_attention(
     # FIA convention (queryT == last(actual_seq_qlen)).
     num_actual_tokens = getattr(attn_metadata, "num_actual_tokens", query.shape[0])
     query = query[:num_actual_tokens]
+
+    if dense_key is not None and dense_value is not None and dense_mode is not None:
+        if _dense_prefill_attention(
+            output,
+            query,
+            dense_key,
+            dense_value,
+            attn_metadata,
+            scale=scale,
+            mode=dense_mode,
+            causal=causal,
+            sliding_window_size=sliding_window_size,
+            logits_soft_cap=logits_soft_cap,
+            s_aux=s_aux,
+            alibi_slopes=alibi_slopes,
+        ):
+            return
 
     std_out = flash_attn_varlen_func(
         q=query,

@@ -27,6 +27,8 @@ metadata. All segments enter a **single** FA call, exposing additional parallel
 work; sequential Python calls would not achieve this. The merge uses FP32 online
 log-sum-exp accumulation and masks empty segments before loading their outputs
 or LSE. It handles uneven final segments and arbitrary request query lengths.
+Each merge program owns one (request, head, 256-element tile); a single program
+per (request, head) leaves too few CTAs and costs as much as the FA call at W=64.
 Workspace and merge cost can outweigh the benefit; segmentation is not enabled
 just because it is supported.
 
@@ -43,9 +45,16 @@ start-up, before any Beam graph is captured, and cached in a commented YAML file
 (`$XDG_CACHE_HOME/vllm_gr/prefix_calibration.yaml`, overridable with
 `VLLM_GR_PREFIX_CALIBRATION_PATH`). Every worker measures its own device and
 writes the same entry, so no lock is needed; a torn file simply fails to parse
-and is re-measured. A plan is installed only when the model predicts at least a
-5% win and the unsplit chain is at least 1.5x above the reachable floor, so
-compute-bound wide-beam shapes stay native.
+and is re-measured. The chain and split probes use the largest length up to
+`max_model_len` (capped at 16384) whose page count divides by 8, so the 8-way
+split probe fits the block table for any `max_model_len`.
+
+A plan is installed only when the model predicts at least a 5% win and the
+unsplit chain is at least 1.5x above the reachable floor, so compute-bound
+wide-beam shapes stay native. The unsplit chain must also reach 150 us, a bound
+measured on L20 for 1024/B1/W128. `VLLM_GR_PREFIX_MIN_CHAIN_US` overrides it;
+on RTX PRO 6000 a value of 8 lets W=64 prefixes of 512-4096 tokens split, where
+native FA2 launches only `heads` CTAs per request.
 
 `VLLM_GR_PREFIX_CALIBRATION=off` skips measurement and `VLLM_GR_PREFIX_POLICY=off`
 disables the whole segmentation path; delete the file to re-measure. Every

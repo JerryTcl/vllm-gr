@@ -464,4 +464,112 @@ def test_short_prefix_stays_native(monkeypatch, tmp_path):
     assert policy.resolve_prefix_plan(long, **args) is not None
 
 
+def _short_prefix_args(monkeypatch, tmp_path):
+    monkeypatch.setenv(policy.ENV_CALIBRATION_PATH, str(tmp_path / "calib.yaml"))
+    monkeypatch.setenv(policy.ENV_PREFIX_POLICY, "auto")
+    fingerprint = {"name": "NVIDIA L20", "capability": [8, 9], "sm_count": 92}
+    geometry = {"heads": 16, "kv_heads": 8, "dim": 128, "dtype": "torch.bfloat16", "block_size": 16}
+    policy.remember_calibration(
+        fingerprint,
+        geometry,
+        policy.PrefixCalibration(u_ns_per_token=31.6, c_comp_us=9.3e-5, c_mem_us=6.8e-3, m_us=4.0),
+    )
+    shape = policy.PrefixShape(
+        batch=1,
+        width=128,
+        length=1024,
+        heads=16,
+        kv_heads=8,
+        dim=128,
+        dtype="torch.bfloat16",
+        block_size=16,
+    )
+    args = {
+        "default_version": 2,
+        "fingerprint": fingerprint,
+        "supported_versions": (2,),
+        "sm_count": 92,
+    }
+    return shape, args
+
+
+@pytest.mark.l1
+def test_min_chain_override_admits_short_prefix(monkeypatch, tmp_path):
+    shape, args = _short_prefix_args(monkeypatch, tmp_path)
+    monkeypatch.delenv(policy.ENV_MIN_CHAIN_US, raising=False)
+    assert policy.resolve_prefix_plan(shape, **args) is None
+    monkeypatch.setenv(policy.ENV_MIN_CHAIN_US, "8")
+    plan = policy.resolve_prefix_plan(shape, **args)
+    assert plan is not None and plan.fa_version == 2 and plan.segments > 1
+    # An unparsable override keeps the conservative default.
+    monkeypatch.setenv(policy.ENV_MIN_CHAIN_US, "fast")
+    assert policy.resolve_prefix_plan(shape, **args) is None
+
+
+@pytest.mark.l1
+@pytest.mark.parametrize("max_model_len", [1043, 10259, 10240, 20000])
+def test_calibration_probe_fits_split_layout(monkeypatch, max_model_len):
+    """The split probe's page count must divide by 8 or calibration is skipped.
+
+    Before the fix, max_model_len=10259 probed 641 pages and segmented_prefix
+    rejected the 8-way layout (648 pages), so no device ever got a calibration.
+    """
+    import torch
+
+    from vllm_gr.v1.attention.backends import beam_prefix_calibrate as calibrate
+
+    probes = []
+
+    def make_case(batch, width, length, **_):
+        probes.append((batch, width, length))
+        return object()
+
+    monkeypatch.setattr(calibrate, "_make_case", make_case)
+    monkeypatch.setattr(calibrate, "_measure", lambda case, plan, **_: 0.1)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda device: SimpleNamespace(multi_processor_count=188),
+    )
+    monkeypatch.setattr(torch.accelerator, "empty_cache", lambda *_: None)
+    calibrate.calibrate_prefix_device(
+        num_heads=16,
+        num_kv_heads=8,
+        head_dim=128,
+        dtype=torch.bfloat16,
+        block_size=16,
+        max_model_len=max_model_len,
+    )
+    chain_length = probes[0][2]
+    assert probes[1][2] == chain_length  # the split probe reuses the chain length
+    assert chain_length % (16 * 8) == 0
+    assert 0 < chain_length <= max_model_len
+
+
+@pytest.mark.l1
+def test_calibration_rejects_model_shorter_than_split_probe(monkeypatch):
+    import torch
+
+    from vllm_gr.v1.attention.backends import beam_prefix_calibrate as calibrate
+
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_properties",
+        lambda device: SimpleNamespace(multi_processor_count=188),
+    )
+    # Stub the probes so a regression fails on the missing raise, not on CUDA.
+    monkeypatch.setattr(calibrate, "_make_case", lambda *args, **kwargs: object())
+    monkeypatch.setattr(calibrate, "_measure", lambda case, plan, **_: 0.1)
+    monkeypatch.setattr(torch.accelerator, "empty_cache", lambda *_: None)
+    with pytest.raises(ValueError, match="shorter than one split probe"):
+        calibrate.calibrate_prefix_device(
+            num_heads=16,
+            num_kv_heads=8,
+            head_dim=128,
+            dtype=torch.bfloat16,
+            block_size=16,
+            max_model_len=100,
+        )
+
+
 pytestmark = pytest.mark.cpu_test

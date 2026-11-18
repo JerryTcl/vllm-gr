@@ -33,6 +33,14 @@ MIN_HEADROOM = 1.5
 # bound, so the relative win is unreal: 1024/B1/W128 predicted 1.5x and measured
 # 5% slower.
 MIN_CHAIN_US = 150.0
+ENV_MIN_CHAIN_US = "VLLM_GR_PREFIX_MIN_CHAIN_US"
+
+
+def _min_chain_us() -> float:
+    try:
+        return float(os.environ.get(ENV_MIN_CHAIN_US, MIN_CHAIN_US))
+    except ValueError:
+        return MIN_CHAIN_US
 
 
 @dataclass(frozen=True)
@@ -471,7 +479,10 @@ def resolve_prefix_plan(
         # Already compute/byte bound at S=1: the model's own win would not
         # survive the extra query copies and merges.
         return None
-    if calibration.terms_us(shape, 1, sm_count)[0] < MIN_CHAIN_US:
+    # The 150us default was fitted on L20 while the merge kernel ran serially
+    # (~40us/call); on RTX PRO 6000 with the parallel merge it blocks 1.3-3.8x
+    # wins at 512-4096 tokens. Overridable until re-measured per device.
+    if calibration.terms_us(shape, 1, sm_count)[0] < _min_chain_us():
         # Short prefix: the call is launch bound, so a relative win does not pay
         # for the extra launches and merges.
         return None
