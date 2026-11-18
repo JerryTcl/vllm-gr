@@ -15,6 +15,8 @@ command from the repository checkout or one of its subdirectories.
 - [Accuracy](accuracy.md) covers offline and HTTP evaluation.
 - [OneRec cache-miss benchmark](../../benchmarks/open_one_rec/V1_BENCHMARK.md)
   describes text-to-text timing and records historical CUDA results.
+- [Beam prefix attention on RTX PRO 6000](beam_prefix_rtx_pro_6000.md) records
+  unconstrained Beam latency against NVIDIA-GR and SGLang.
 - [Catalog preparation](../../benchmarks/open_one_rec/tools/README.md) covers
   converting the dataset catalog before building a Constraint Table.
 - [Video-100](parent_score_gate.md) and [five-task Recall](beam_v1_recall_gate.md)

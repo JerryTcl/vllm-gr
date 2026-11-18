@@ -86,6 +86,9 @@ retain their original graph bounds and only match profiles for those bounds.
 ## Validation status
 
 See the PR description and its dated validation note for checks actually run.
+[Beam prefix attention on RTX PRO 6000](benchmarks/beam_prefix_rtx_pro_6000.md)
+records the measured latency of the CUDA fixes and opt-in modes against
+NVIDIA-GR and SGLang.
 Backend capability filtering and CPU graph-cache tests do not establish GPU
 performance on untested architectures. FA4 requires its optional CuTe dependencies.
 Numerical comparisons use tolerances; changing backend or reduction order does
