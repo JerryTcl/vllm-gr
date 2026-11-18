@@ -25,3 +25,7 @@ class BackendNotActiveError(BackendRegistryError):
 
 class BackendAlreadyActiveError(BackendRegistryError):
     pass
+
+
+class GRDeviceRequestError(ValueError):
+    """A request cannot run on an otherwise supported device configuration."""

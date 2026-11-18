@@ -76,8 +76,8 @@ def _write_config(host: SimpleNamespace, gr_config: GRConfig) -> None:
 def test_npu_v2_rejected_during_engine_config_before_runtime_hooks(
     monkeypatch: pytest.MonkeyPatch, mode: str, encoding: str
 ) -> None:
+    from vllm_gr.config import execution
     from vllm_gr.engine import arg_utils_gr
-    from vllm_gr.v1.engine import beam_search_v1
 
     config = _host("npu", True)
     gr_config = _gr_config(mode, canonical=encoding == "canonical")
@@ -92,7 +92,7 @@ def test_npu_v2_rejected_during_engine_config_before_runtime_hooks(
     monkeypatch.setattr(arg_utils_gr, "_is_cuda_platform", lambda: False)
     runtime_validation = Mock(side_effect=AssertionError("runtime initialization reached"))
     canonical_write = Mock(side_effect=AssertionError("worker configuration published"))
-    monkeypatch.setattr(beam_search_v1, "validate_gr_execution_config", runtime_validation)
+    monkeypatch.setattr(execution, "validate_gr_execution_config", runtime_validation)
     monkeypatch.setattr(arg_utils_gr, "write_canonical_gr_config", canonical_write)
 
     with pytest.raises(ValueError, match=_V1_REQUIRED):

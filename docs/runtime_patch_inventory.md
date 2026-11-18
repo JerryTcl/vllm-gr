@@ -70,10 +70,10 @@ installers run or their ordering.
 | GR-PATCH-002 | `vllm_gr/v1/ascend_compat.py` | `patch_npu_worker_init_device` | selected NPU provider, unwrapped worker target | `test_npu_worker_patch_is_lazy_and_preserves_lifecycle_contract` | worker |
 | GR-PATCH-003 | `vllm_gr/logprobs.py` | `logprobs_patch.patch_flat_logprobs` | required frontend plan finds the method absent | `_validate_flat_logprobs_patch`; patch initialization tests | offline frontend, API server |
 | GR-PATCH-004 | `entrypoints/openai/serving_engine.py`, `protocol.py` | `beam_search_patch.patch_beam_search`, `patch_sampling` | required frontend plan finds either method absent | `_validate_openai_beam_search_patch`, `_validate_chat_sampling_patch`; serving dispatch, online entry, and OneRec HTTP tests | API server |
-| GR-PATCH-005 | `vllm_gr/engine/arg_utils_gr.py` | `patch_add_cli_args` | required frontend plan finds GR EngineArgs methods absent | `_validate_engine_args_patch`; attention backend configuration tests | main, API server |
-| GR-PATCH-007 | `v1/engine/core_client.py`, `core_client_patch.py`, `async_llm.py` | `beam_search_patch.patch_batch_and_fork` | required frontend plan finds V1 client/lifecycle methods incomplete | `_validate_batch_and_fork_patch`; V1 request, admission, rejection, and online lifecycle tests | API server |
-| GR-PATCH-008 | `vllm_gr/v1/engine/wire.py` | `register_engine_core_request_types` | frontend and EngineCore require GR wire values | `_validate_request_types_patch`; EngineCore protocol contracts | API server, EngineCore |
-| GR-PATCH-009 | `v1/engine/core.py`, `engine_core_patch.py`, `hot_update.py` | `apply_engine_core_request_patches` | Shared EngineCore plan, including NPU child entry, finds request dispatch or Trie-capacity initialization incomplete; utilities do not depend on the management listener | request validators; V1 admission, NPU multi-Trie routing, hot-update utility contracts and management tests | EngineCore |
+| GR-PATCH-005 | `vllm_gr/engine/arg_utils.py` | `patch_add_cli_args` | required frontend plan finds GR EngineArgs methods absent | `_validate_engine_args_patch`; attention backend configuration tests | main, API server |
+| GR-PATCH-007 | `engine/core_client.py`, `core_client_patch.py`, `gr_session_client.py`, `output_processor.py` | `patch.install_engine_session_hooks` | required frontend plan finds V1 client/lifecycle methods incomplete | `_validate_batch_and_fork_patch`; V1 request, admission, rejection, and online lifecycle tests | main, API server |
+| GR-PATCH-008 | `vllm_gr/engine/wire.py` | `register_engine_core_request_types` | frontend and EngineCore require GR wire values | `_validate_request_types_patch`; EngineCore protocol contracts | API server, EngineCore |
+| GR-PATCH-009 | `engine/core.py`, `core_socket.py`, `engine_core_patch.py`, `hot_update.py` | `apply_engine_core_request_patches` | Shared EngineCore plan, including NPU child entry, finds request dispatch or Trie-capacity initialization incomplete; utilities do not depend on the management listener | request validators; V1 admission, NPU multi-Trie routing, hot-update utility contracts and management tests | EngineCore |
 | GR-PATCH-010 | `v1/engine/engine_core_patch.py`, `gr_async_scheduler.py` | `apply_scheduler_patch` | EngineCore plan finds metadata propagation absent | `_validate_scheduler_patch`; EngineCore protocol contracts | EngineCore |
 | GR-PATCH-011 | GPU V1/V2 runner patches; `worker/hot_update.py` | `model_runner_patch.apply_worker_patches` | selected CUDA runner hooks are incomplete; common installer mounts Worker utilities | runner validator; GPU, utility contract, reload and lifecycle tests | GPU worker |
 | GR-PATCH-012 | NPU runner patch; `worker/hot_update.py`, `ascend_compat.py` | `model_runner_patch.apply_worker_patches`; delayed `NPUWorker.init_device` | active NPU runner hooks are incomplete; delayed initialization mounts Worker utilities | NPU runner, delayed-install and unsupported-reload guard tests | NPU worker |
@@ -210,8 +210,8 @@ installers run or their ordering.
   frontend methods, and preserves admission rejection identities.
 - Private/internal dependencies: client `_send_input` / `_send_input_message`,
   native output collectors, and the EngineCore utility channel for retirement.
-- `patch_batch_and_fork` is a retained installer name for this V1 pipeline;
-  it does not restore the retired frontend batch/fork protocol.
+- The frontend runtime plan calls `patch.install_engine_session_hooks` for offline,
+  HTTP and gRPC startup. It installs session methods and the spawned Core entrypoint.
 - Removal condition: upstream exposes equivalent session submission and lifecycle hooks.
 
 ### GR-PATCH-008 — EngineCoreRequestType Extension
@@ -234,7 +234,7 @@ installers run or their ordering.
 
 - Scope: `core`; backend ID: `null`
 
-- Sources: `vllm_gr/v1/engine/core.py`, `engine_core_patch.py`, `hot_update.py`
+- Sources: `vllm_gr/engine/core.py`, `core_socket.py`, `engine_core_patch.py`, `hot_update.py`
 - Targets:
     - `EngineCore.__init__`
     - `EngineCoreProc.__init__`
@@ -572,7 +572,7 @@ The CUDA plugin subprocess test and sliced-logits proxy tests cover this boundar
 - Scope: `backend`; backend ID: `npu`
 
 - Source / Installer: `vllm_gr/v1/ascend_compat.py`
-- Orchestration: `vllm_gr/engine/arg_utils_gr.py::create_engine_config`
+- Orchestration: `vllm_gr/engine/arg_utils.py::create_engine_config`
   and worker plugin initialization through `vllm_gr/patch.py::_apply_patches`
 - Targets:
     - `vllm.v1.engine.core.EngineCoreProc.run_engine_core` (process-global

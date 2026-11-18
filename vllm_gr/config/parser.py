@@ -4,12 +4,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, MutableMapping
-from dataclasses import MISSING
+from dataclasses import MISSING, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Final, TypeAlias, cast
+from typing import Any, Final, Literal, TypeAlias, cast
 
-from vllm_gr.config.models import ConstraintTableConfig, GRConfig
+from vllm_gr.config.models import (
+    AUTO_CONSTRAINT_TABLE_PATH,
+    ConstraintBackend,
+    ConstraintTableConfig,
+    GRAttentionBackend,
+    GRConfig,
+)
 from vllm_gr.config.schema import (
     canonical_keys,
     config_fields,
@@ -304,3 +310,222 @@ def write_canonical_gr_config(vllm_config: object, gr_config: GRConfig) -> None:
         object.__setattr__(vllm_config, "_vllm_gr_parsed_config", None)
     except (AttributeError, TypeError):
         pass
+
+
+def _legacy_engine_config(
+    args: Any,
+    existing_gr_config: GRConfig,
+    backend_is_explicit: bool,
+    backend_override: GRAttentionBackend | None,
+    device_type: str,
+) -> GRConfig:
+    from vllm_gr.config.validation import validate_beam_engine_driven
+
+    catalog_path = getattr(args, "catalog_path", None)
+    constraint_backend = getattr(args, "constraint_backend", None)
+    constrained_generation = getattr(args, "constrained_generation", None)
+    effective_catalog_path = (
+        catalog_path if catalog_path is not None else existing_gr_config.catalog_path
+    )
+    effective_constraint_backend = (
+        ConstraintBackend(constraint_backend)
+        if constraint_backend is not None
+        else existing_gr_config.constraint_backend
+    )
+    effective_constrained_generation = (
+        constrained_generation
+        if constrained_generation is not None
+        else existing_gr_config.constrained_generation
+    )
+    effective_beam_worker_decision = (
+        getattr(args, "beam_worker_decision", None)
+        if getattr(args, "beam_worker_decision", None) is not None
+        else existing_gr_config.beam_worker_decision
+    )
+    validate_beam_engine_driven(getattr(args, "beam_engine_driven", None))
+    beam_width_configured = (
+        getattr(args, "beam_max_width", None) is not None
+        or existing_gr_config.beam_max_width is not None
+    )
+    if device_type == "npu":
+        from vllm_gr.platforms.npu import default_constraint_backend
+
+        effective_constraint_backend = default_constraint_backend(
+            effective_constraint_backend,
+            explicit=constraint_backend is not None,
+            constrained_generation=effective_constrained_generation,
+            beam_width_configured=beam_width_configured,
+            catalog_path=effective_catalog_path,
+        )
+    if (
+        effective_beam_worker_decision is None
+        and beam_width_configured
+        and device_type in ("cuda", "npu")
+    ):
+        effective_beam_worker_decision = True
+    offset, slice_size = None, None
+    # CUDA Constraint Tables support sliced logits while keeping global
+    # table token ids (CUDAConstrainedTopKExecution._vocab_window).  The
+    # slice helper accepts both Trie lists and triples documents, so keep
+    # the old lm_head fast path on CUDA. NPU retains its full-vocabulary
+    # ABI and validate_constraint_table_platform rejects slicing there.
+    constraint_slice_supported = (
+        effective_constraint_backend is not ConstraintBackend.CONSTRAINT_TABLE
+        or device_type == "cuda"
+    )
+    if (
+        effective_constrained_generation is not False
+        and effective_catalog_path is not None
+        and effective_catalog_path != AUTO_CONSTRAINT_TABLE_PATH
+        and constraint_slice_supported
+    ):
+        model_name = getattr(args, "model", None)
+        if model_name is not None:
+            from vllm_gr.utils.catalog import compute_catalog_slice_config
+
+            trust_remote_code = bool(getattr(args, "trust_remote_code", False))
+            offset, slice_size = compute_catalog_slice_config(
+                effective_catalog_path,
+                model_name,
+                trust_remote_code=trust_remote_code,
+            )
+            if offset is not None and slice_size is not None:
+                from vllm_gr.ops.sliced_logits import set_vocab_slice_config
+
+                set_vocab_slice_config(offset, slice_size)
+
+    return replace(
+        existing_gr_config,
+        catalog_path=effective_catalog_path,
+        constraint_backend=effective_constraint_backend,
+        attention_backend=(
+            backend_override if backend_is_explicit else existing_gr_config.attention_backend
+        ),
+        vocab_offset=offset if offset is not None else existing_gr_config.vocab_offset,
+        vocab_slice_size=(
+            slice_size if slice_size is not None else existing_gr_config.vocab_slice_size
+        ),
+        beam_graph_enabled=(
+            existing_gr_config.beam_graph_enabled and not getattr(args, "no_beam_graph", False)
+        ),
+        beam_max_width=(
+            getattr(args, "beam_max_width", None)
+            if getattr(args, "beam_max_width", None) is not None
+            else existing_gr_config.beam_max_width
+        ),
+        beam_max_decode_steps=(
+            getattr(args, "beam_max_decode_steps", None)
+            if getattr(args, "beam_max_decode_steps", None) is not None
+            else existing_gr_config.beam_max_decode_steps
+        ),
+        beam_worker_decision=effective_beam_worker_decision,
+        beam_execution_mode=existing_gr_config.beam_execution_mode,
+        schema_version=existing_gr_config.schema_version,
+        constraint_table=existing_gr_config.constraint_table,
+        constrained_generation=effective_constrained_generation,
+    )
+
+
+def resolve_engine_gr_config(
+    args: Any,
+    config: Any,
+    attention_backend: tuple[bool, GRAttentionBackend | None],
+    device_type: str,
+) -> tuple[GRConfig, Literal["canonical", "legacy"] | None]:
+    """Resolve CLI/Python inputs and report canonical or legacy write-back requirements."""
+    # Parse unconditionally so invalid raw vllm_gr_* options fail before
+    # the EngineConfig is returned and before runtime execution begins.
+    additional_config = getattr(config, "additional_config", None)
+    canonical_in_additional_config = (
+        isinstance(additional_config, Mapping) and GR_CONFIG_KEY in additional_config
+    )
+    legacy_keys_in_additional_config = (
+        sorted(key for key in KNOWN_GR_CONFIG_KEYS if key in additional_config)
+        if isinstance(additional_config, Mapping)
+        else []
+    )
+    existing_gr_config = GRConfig.from_vllm_config(config)
+    # Parsing consumes the retired value, so config equality alone cannot tell
+    # whether the raw additional_config sent to workers still needs cleanup.
+    retired_input_present = BEAM_ENGINE_DRIVEN_KEY in legacy_keys_in_additional_config
+    canonical_input = getattr(args, "_vllm_gr_config_input", None)
+    catalog_path = getattr(args, "catalog_path", None)
+    constraint_backend = getattr(args, "constraint_backend", None)
+    constrained_generation = getattr(args, "constrained_generation", None)
+    backend_is_explicit, backend_override = attention_backend
+
+    # GRLLM historically forwards its default ConstraintBackend.TRIE value.
+    # Treat that exact enum default as omitted so a canonical config can pass
+    # through GRLLM's **kwargs path without changing the legacy signature.
+    legacy_argument_present = (
+        catalog_path is not None
+        or (constraint_backend is not None and constraint_backend is not ConstraintBackend.TRIE)
+        or getattr(args, "beam_max_width", None) is not None
+        or getattr(args, "beam_max_decode_steps", None) is not None
+        or bool(getattr(args, "no_beam_graph", False))
+        or getattr(args, "beam_worker_decision", None) is not None
+        or getattr(args, "beam_engine_driven", None) is not None
+        or constrained_generation is not None
+        or backend_is_explicit
+    )
+
+    if canonical_input is not None:
+        if canonical_in_additional_config:
+            raise ValueError(
+                "vllm_gr_config cannot be combined with an existing canonical "
+                "additional_config['vllm_gr']"
+            )
+        if legacy_argument_present or legacy_keys_in_additional_config:
+            raise ValueError(
+                "canonical vllm_gr_config cannot be combined with legacy "
+                "vLLM-GR CLI, Python, or additional_config inputs"
+            )
+        effective_gr_config = normalize_gr_config_input(canonical_input)
+        canonical_source = True
+    elif canonical_in_additional_config:
+        if legacy_argument_present:
+            raise ValueError(
+                "canonical additional_config['vllm_gr'] cannot be combined "
+                "with legacy vLLM-GR CLI or Python inputs"
+            )
+        effective_gr_config = existing_gr_config
+        canonical_source = True
+    else:
+        canonical_source = False
+        effective_gr_config = _legacy_engine_config(
+            args, existing_gr_config, backend_is_explicit, backend_override, device_type
+        )
+    if (
+        canonical_source
+        and effective_gr_config.beam_worker_decision is None
+        and effective_gr_config.beam_max_width is not None
+        and device_type in ("cuda", "npu")
+    ):
+        effective_gr_config = replace(effective_gr_config, beam_worker_decision=True)
+    if (
+        effective_gr_config.constrained_generation is False
+        and effective_gr_config.beam_max_width is not None
+        and device_type == "npu"
+    ):
+        from vllm_gr.platforms.npu_admission import validate_npu_unconstrained_runner
+
+        validate_npu_unconstrained_runner(config)
+
+    if effective_gr_config.constrained_generation is False:
+        from vllm_gr.ops.sliced_logits import set_vocab_slice_config
+
+        set_vocab_slice_config(None, None)
+
+    execution_mode = getattr(args, "beam_execution_mode", None)
+    if execution_mode is not None:
+        from vllm_gr.config.validation import validate_beam_execution_mode
+
+        effective_gr_config = replace(
+            effective_gr_config, beam_execution_mode=validate_beam_execution_mode(execution_mode)
+        )
+
+    if canonical_source:
+        return effective_gr_config, "canonical"
+    if effective_gr_config != existing_gr_config or retired_input_present:
+        return effective_gr_config, "legacy"
+    return effective_gr_config, None

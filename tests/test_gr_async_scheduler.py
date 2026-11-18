@@ -41,7 +41,9 @@ from vllm_gr.v1.engine.core import _handle_submit_gr_session
 from vllm_gr.v1.engine.core_client import (
     submit_gr_session_async as submit_gr_session_to_core_async,
 )
-from vllm_gr.v1.engine.core_client_patch import sync_mp_submit_gr_session
+from vllm_gr.v1.engine.core_client import (
+    sync_mp_submit_gr_session,
+)
 from vllm_gr.v1.engine.engine_core_patch import (
     _GR_FINALIZING_IDS_ATTR,
     _expand_gr_abort_request_ids,

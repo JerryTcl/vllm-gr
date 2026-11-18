@@ -393,3 +393,17 @@ def validate_beam_max_decode_steps(value: object) -> int:
         value if value is not None else config_default(GRConfig, "beam_max_decode_steps"),
         "beam_max_decode_steps",
     )
+
+
+def validate_online_batch_capacity(gr_config: GRConfig, max_num_seqs: int | None) -> None:
+    from vllm_gr.config.models import DEFAULT_ONLINE_BATCH_SIZES
+
+    if (
+        gr_config.beam_online_batch_sizes != DEFAULT_ONLINE_BATCH_SIZES
+        and max_num_seqs is not None
+        and max(gr_config.beam_online_batch_sizes) > max_num_seqs
+    ):
+        raise ValueError(
+            "beam.online_batch_sizes exceeds max_num_seqs; increase the explicit "
+            "sequence capacity or select smaller batch sizes"
+        )

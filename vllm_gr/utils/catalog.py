@@ -225,3 +225,24 @@ class Catalog:
                 if new_decoded is not None:
                     new_decoded[j] = None
         return new_tids, new_lps, new_ranks, new_decoded
+
+
+def catalog_is_triples_document(catalog_path: str) -> bool:
+    """Return whether ``catalog_path`` holds a Constraint Tables triples doc.
+
+    The triples document produced by ``tools/build_constraint_triples.py`` is a
+    JSON object keyed by ``format_version`` / ``triples`` / ``sentinels`` /
+    ``relations``.  The Trie frontend catalog (``convert_catalog.py`` output,
+    and the inline serving-catalog tests) is a JSON *list* of token sequences.
+    The NPU auto-promotion must only fire on a triples document — promoting a
+    Trie-list catalog to the Worker-side Constraint Tables backend would feed a
+    list to ``compile_constraint_table_resource`` and fail fast.
+    """
+    try:
+        with open(catalog_path, "r", encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, ValueError):
+        # Unreadable / malformed: let the downstream compiler surface the
+        # precise error rather than guessing here.
+        return False
+    return isinstance(document, dict)

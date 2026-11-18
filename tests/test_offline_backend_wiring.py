@@ -26,38 +26,19 @@ import pytest
 
 from vllm_gr.config import ConstraintBackend, GRConfig
 
-# ``arg_utils_gr`` / ``gr`` are cached in sys.modules once a process imports
+# ``arg_utils`` / ``gr`` are cached in sys.modules once a process imports
 # them (possibly against the real vLLM in CI).  Each test re-imports them
 # against its own fakes so patch state cannot leak across tests.
 _VLLM_GR_REIMPORT = (
-    "vllm_gr.engine.arg_utils_gr",
+    "vllm_gr.engine.arg_utils",
     "vllm_gr.entrypoints.gr",
 )
-
-
-def _drop_reimported_modules() -> None:
-    for name in list(sys.modules):
-        if name in _VLLM_GR_REIMPORT:
-            del sys.modules[name]
-    # ``from vllm_gr.engine import arg_utils_gr`` resolves through the cached
-    # parent package's ``__dict__`` before falling back to sys.modules, so
-    # dropping the sys.modules entry alone leaves the stale submodule attribute
-    # on the package.  The next test would then import the previous test's
-    # module (whose ``EngineArgs`` / ``origin_*`` globals point at the old fake
-    # class) instead of re-executing against its own fakes.
-    for parent_name, submodule_name in (
-        ("vllm_gr.engine", "arg_utils_gr"),
-        ("vllm_gr.entrypoints", "gr"),
-    ):
-        parent = sys.modules.get(parent_name)
-        if parent is not None and hasattr(parent, submodule_name):
-            delattr(parent, submodule_name)
 
 
 def _install_fake_vllm_modules(monkeypatch: pytest.MonkeyPatch) -> None:
     """Provide every vLLM module the offline GRLLM import chain needs."""
 
-    # ``arg_utils_gr`` patches this class (add_cli_args / create_engine_config /
+    # ``arg_utils`` patches this class (add_cli_args / create_engine_config /
     # from_cli_args / __init__), so it must carry the four originals first.
     class EngineArgs:
         def __init__(self, model: str = "", **kwargs: Any) -> None:
@@ -218,16 +199,27 @@ def _install_fake_vllm_modules(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)  # type: ignore[misc]
 def _isolated_vllm_imports(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Fake vLLM per test and re-import arg_utils_gr / gr against the fakes.
+    """Fake vLLM per test and re-import arg_utils / gr against the fakes.
 
     Both vllm-gr modules are cached process-wide (in CI they may already be
     imported against the real vLLM).  Re-importing them per test keeps the
     patch state deterministic without mutating the real vLLM classes.
     """
     _install_fake_vllm_modules(monkeypatch)
-    _drop_reimported_modules()
-    yield
-    _drop_reimported_modules()
+    for name in _VLLM_GR_REIMPORT:
+        package, attr = name.rsplit(".", 1)
+        monkeypatch.delitem(sys.modules, name, raising=False)
+        if package in sys.modules:
+            monkeypatch.delattr(sys.modules[package], attr, raising=False)
+    try:
+        yield
+    finally:
+        # Remove modules created by the test before monkeypatch restores the originals.
+        for name in _VLLM_GR_REIMPORT:
+            sys.modules.pop(name, None)
+            package, attr = name.rsplit(".", 1)
+            if package in sys.modules:
+                vars(sys.modules[package]).pop(attr, None)
 
 
 def _fake_config() -> SimpleNamespace:
@@ -239,7 +231,7 @@ class TestEngineArgsGrInitPatch:
     """The offline path reaches EngineCore only through this patch."""
 
     def test_patch_mounts_and_stashes_gr_values(self) -> None:
-        from vllm_gr.engine.arg_utils_gr import patch_add_cli_args
+        from vllm_gr.engine.arg_utils import patch_add_cli_args
 
         patch_add_cli_args()
 
@@ -254,7 +246,7 @@ class TestEngineArgsGrInitPatch:
         assert engine_args.constraint_backend == "constraint_table"
 
     def test_patch_applies_engine_defaults_and_preserves_overrides(self) -> None:
-        from vllm_gr.engine.arg_utils_gr import patch_add_cli_args
+        from vllm_gr.engine.arg_utils import patch_add_cli_args
 
         patch_add_cli_args()
 
@@ -301,8 +293,8 @@ class TestEngineArgsGrInitPatch:
 
     def test_create_engine_config_writes_constraint_backend(self) -> None:
         """The threaded values reach VllmConfig via the patched factory."""
-        from vllm_gr.engine import arg_utils_gr
-        from vllm_gr.engine.arg_utils_gr import create_engine_config, patch_add_cli_args
+        from vllm_gr.engine import arg_utils
+        from vllm_gr.engine.arg_utils import create_engine_config, patch_add_cli_args
 
         patch_add_cli_args()
 
@@ -315,7 +307,7 @@ class TestEngineArgsGrInitPatch:
         )
         vllm_config = _fake_config()
         with mock.patch.object(
-            arg_utils_gr,
+            arg_utils,
             "origin_create_engine_config",
             return_value=vllm_config,
         ):
@@ -327,8 +319,8 @@ class TestEngineArgsGrInitPatch:
 
     def test_plain_construction_writes_nothing(self) -> None:
         """A plain EngineArgs must not change the (default) GR config."""
-        from vllm_gr.engine import arg_utils_gr
-        from vllm_gr.engine.arg_utils_gr import create_engine_config, patch_add_cli_args
+        from vllm_gr.engine import arg_utils
+        from vllm_gr.engine.arg_utils import create_engine_config, patch_add_cli_args
 
         patch_add_cli_args()
 
@@ -337,7 +329,7 @@ class TestEngineArgsGrInitPatch:
         engine_args = EngineArgs(model=None)
         vllm_config = _fake_config()
         with mock.patch.object(
-            arg_utils_gr,
+            arg_utils,
             "origin_create_engine_config",
             return_value=vllm_config,
         ):
@@ -348,12 +340,10 @@ class TestEngineArgsGrInitPatch:
 
 class TestGrllmCanonicalConstruction:
     def _import_gr(self, monkeypatch: pytest.MonkeyPatch) -> Any:
-        import vllm_gr.entrypoints.gr as gr
-        import vllm_gr.entrypoints.openai.beam_search_patch as beam_search_patch
-        import vllm_gr.plugin as plugin
+        from vllm_gr import plugin
+        from vllm_gr.entrypoints import gr
 
         monkeypatch.setattr(plugin, "initialize_runtime", lambda: {"patch_count": 0})
-        monkeypatch.setattr(beam_search_patch, "patch_engine_core_process_entrypoint", lambda: None)
         monkeypatch.setattr(gr, "_install_renderer_eos_token_id_cache", lambda: None)
         return gr
 

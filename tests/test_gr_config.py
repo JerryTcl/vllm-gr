@@ -586,7 +586,7 @@ def test_npu_constraint_table_auto_promotion_respects_capacity(
             return_value=True,
         ),
         mock.patch(
-            "vllm_gr.engine.arg_utils_gr._catalog_is_triples_document",
+            "vllm_gr.utils.catalog.catalog_is_triples_document",
             return_value=True,
         ),
     ):
@@ -823,7 +823,7 @@ def test_npu_trie_list_catalog_is_not_promoted() -> None:
             return_value=True,
         ),
         mock.patch(
-            "vllm_gr.engine.arg_utils_gr._catalog_is_triples_document",
+            "vllm_gr.utils.catalog.catalog_is_triples_document",
             return_value=False,
         ),
     ):
@@ -878,7 +878,7 @@ def test_npu_catalog_path_without_backend_promotes_to_constraint_table(
             return_value=True,
         ),
         mock.patch(
-            "vllm_gr.engine.arg_utils_gr._catalog_is_triples_document",
+            "vllm_gr.utils.catalog.catalog_is_triples_document",
             return_value=True,
         ),
         mock.patch(

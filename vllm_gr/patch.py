@@ -209,7 +209,7 @@ def _validate_chat_sampling_patch() -> str | None:
 def _validate_engine_args_patch() -> str | None:
     from vllm.engine.arg_utils import EngineArgs
 
-    from vllm_gr.engine.arg_utils_gr import (
+    from vllm_gr.engine.arg_utils import (
         _init_engine_args,
         add_cli_args,
         create_engine_config,
@@ -237,13 +237,13 @@ def _validate_request_types_patch() -> str | None:
 def _validate_engine_clients_patch() -> str | None:
     from vllm.v1.engine.core_client import AsyncMPClient, InprocClient, SyncMPClient
 
-    from vllm_gr.v1.engine.core_client import submit_gr_session_async
-    from vllm_gr.v1.engine.core_client_patch import (
+    from vllm_gr.engine.core_client import (
         inproc_abort_requests,
         inproc_add_request,
         inproc_get_output,
         inproc_shutdown,
         inproc_submit_gr_session,
+        submit_gr_session_async,
         sync_mp_submit_gr_session,
     )
 
@@ -264,12 +264,12 @@ def _validate_async_llm_patch() -> str | None:
     from vllm.v1.engine.llm_engine import LLMEngine
     from vllm.v1.engine.output_processor import OutputProcessor
 
-    from vllm_gr.v1.engine import gr_session_client
-    from vllm_gr.v1.engine.async_llm import _PROCESS_OUTPUTS_PATCH_MARKER
-    from vllm_gr.v1.engine.core_client_patch import (
+    from vllm_gr.engine import gr_session_client
+    from vllm_gr.engine.gr_session_client import (
         async_llm_add_request,
         llm_engine_add_request,
     )
+    from vllm_gr.engine.output_processor import _PROCESS_OUTPUTS_PATCH_MARKER
 
     valid = (
         bool(getattr(OutputProcessor.process_outputs, _PROCESS_OUTPUTS_PATCH_MARKER, False))
@@ -288,7 +288,7 @@ def _validate_async_llm_patch() -> str | None:
 def _validate_engine_core_entrypoint_patch() -> str | None:
     from vllm.v1.engine.core import EngineCoreProc
 
-    from vllm_gr.v1.engine.engine_core_patch import run_engine_core
+    from vllm_gr.engine.engine_core_patch import run_engine_core
 
     return _verified(
         EngineCoreProc.run_engine_core is run_engine_core,
@@ -299,12 +299,12 @@ def _validate_engine_core_entrypoint_patch() -> str | None:
 def _validate_engine_core_request_patch() -> str | None:
     from vllm.v1.engine.core import EngineCore, EngineCoreProc
 
-    from vllm_gr.v1.engine.core import (
+    from vllm_gr.engine.core import (
         _handle_submit_gr_session,
         is_gr_session_retired,
-        process_input_sockets,
     )
-    from vllm_gr.v1.engine.engine_core_patch import (
+    from vllm_gr.engine.core_socket import process_input_sockets
+    from vllm_gr.engine.engine_core_patch import (
         _CLIENT_REQUEST_PATCH_MARKER,
         _ENGINE_STEP_PATCH_MARKER,
         _PIS_PATCH_MARKER,
@@ -373,6 +373,15 @@ def _validate_engine_core_request_group() -> str | None:
     return "; ".join(failures) or None
 
 
+def install_engine_session_hooks() -> None:
+    """Install session transport for the frontend, in-process Core, and spawned Core."""
+    from vllm_gr.engine.core_client_patch import apply_gr_session_patches
+    from vllm_gr.engine.engine_core_patch import patch_engine_core_process_entrypoint
+
+    apply_gr_session_patches()
+    patch_engine_core_process_entrypoint()
+
+
 def _validate_batch_and_fork_patch() -> str | None:
     """Verify every target mutated by the grouped Beam engine installer."""
 
@@ -428,14 +437,14 @@ def _required_beam_patches() -> tuple[BeamPatch, ...]:
         ),
         patch(
             "engine_args",
-            "vllm_gr.engine.arg_utils_gr",
+            "vllm_gr.engine.arg_utils",
             "patch_add_cli_args",
             _validate_engine_args_patch,
         ),
         patch(
             "batch_and_fork",
-            "vllm_gr.entrypoints.openai.beam_search_patch",
-            "patch_batch_and_fork",
+            "vllm_gr.patch",
+            "install_engine_session_hooks",
             _validate_batch_and_fork_patch,
         ),
     )
@@ -459,7 +468,7 @@ def _engine_core_beam_patches() -> tuple[BeamPatch, ...]:
     return (
         patch(
             "engine_core_requests",
-            "vllm_gr.v1.engine.engine_core_patch",
+            "vllm_gr.engine.engine_core_patch",
             "apply_engine_core_request_patches",
             _validate_engine_core_request_group,
         ),

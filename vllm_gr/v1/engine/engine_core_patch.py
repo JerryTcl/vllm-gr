@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-GR project
-"""V1 GR admission, scheduling, retirement and EngineCore integration."""
+"""Legacy scheduler and KV-cache integration pending the RFC 751 PR1 extraction."""
 
 from __future__ import annotations
 
 import hashlib
-import time
 from collections import OrderedDict
 from functools import wraps
 
@@ -14,316 +13,42 @@ import numpy as np
 from vllm.logger import init_logger
 from vllm.utils.hashing import sha256 as _vllm_sha256
 
-from vllm_gr.v1.engine.wire import register_engine_core_request_types
+from vllm_gr.engine.engine_core_patch import (
+    apply_engine_core_child_patches as apply_engine_core_child_patches,
+)
+from vllm_gr.engine.engine_core_patch import (
+    apply_engine_core_request_patches as apply_engine_core_request_patches,
+)
+from vllm_gr.engine.engine_core_patch import (
+    make_patched_engine_init as make_patched_engine_init,
+)
+from vllm_gr.engine.engine_core_patch import (
+    make_patched_handle_client_request as make_patched_handle_client_request,
+)
+from vllm_gr.engine.engine_core_patch import (
+    make_patched_process_engine_step as make_patched_process_engine_step,
+)
+from vllm_gr.engine.engine_core_patch import (
+    patch_engine_core_process_entrypoint as patch_engine_core_process_entrypoint,
+)
+from vllm_gr.engine.engine_core_patch import run_engine_core as run_engine_core
 
 logger = init_logger(__name__)
 
 _SCHEDULER_PATCH_MARKER = "_vllm_gr_beam_scheduler_patch"
-_ENGINE_STEP_PATCH_MARKER = "_vllm_gr_progress_step"
-_CLIENT_REQUEST_PATCH_MARKER = "_vllm_gr_gr_input_dispatch"
-_PIS_PATCH_MARKER = "_vllm_gr_process_input_sockets"
 _GR_FINALIZING_IDS_ATTR = "_gr_v1_finalizing_request_ids"
 _GR_NATIVE_UPDATE_IDS_ATTR = "_gr_v1_native_update_request_ids"
 _GR_RESET_PREFIX_CACHE_PATCH_MARKER = "_vllm_gr_v1_reset_prefix_cache"
 _GR_SCHEDULE_PATCH_DEPTH_ATTR = "_vllm_gr_schedule_patch_depth"
 
-# Upstream EngineCoreProc.process_input_sockets captured before the adapter
-# is installed.  Parity tests inspect this object against the pinned vLLM.
-UPSTREAM_PROCESS_INPUT_SOCKETS = None
 
+def __getattr__(name: str):
+    # The upstream socket loop is captured at installation time.
+    if name == "UPSTREAM_PROCESS_INPUT_SOCKETS":
+        from vllm_gr.engine import engine_core_patch
 
-def make_patched_engine_init(original):
-    """Publish the loaded table's immutable capacity before accepting requests."""
-    if getattr(original, "_gr_trie_capacity_patch", False):
-        return original
-
-    @wraps(original)
-    def initialize(self, *args, **kwargs):
-        original(self, *args, **kwargs)
-        from vllm_gr.config import BeamExecutionMode, GRConfig
-        from vllm_gr.v1.engine.core import loaded_constraint_trie_count
-
-        config = GRConfig.from_vllm_config(self.vllm_config)
-        if config.beam_execution_mode is not BeamExecutionMode.V1:
-            return
-        counts = self.model_executor.collective_rpc(loaded_constraint_trie_count)
-        if not counts or any(type(n) is not int or n < 1 or n != counts[0] for n in counts):
-            raise RuntimeError("Workers disagree on the loaded constraint table Trie count")
-        self._gr_trie_count = self.scheduler._gr_trie_count = counts[0]
-
-    initialize._gr_trie_capacity_patch = True
-    return initialize
-
-
-def make_patched_process_engine_step(original_step):
-    """Preserve V1 progress-aware backoff while forwarding native outputs."""
-
-    if getattr(original_step, _ENGINE_STEP_PATCH_MARKER, False):
-        return original_step
-
-    @wraps(original_step)
-    def patched_process_engine_step(self):
-        progress_before = getattr(self.scheduler, "_gr_progress", 0)
-        outputs, model_executed = self.step_fn()
-        for output in outputs.items() if outputs else ():
-            self.output_queue.put_nowait(output)
-        self.post_step(model_executed)
-
-        if (
-            not model_executed
-            and self.scheduler.has_requests()
-            and getattr(self.scheduler, "_gr_progress", 0) == progress_before
-            and not getattr(self, "batch_queue", None)
-        ):
-            time.sleep(0.001)
-
-        return model_executed
-
-    setattr(patched_process_engine_step, _ENGINE_STEP_PATCH_MARKER, True)
-    return patched_process_engine_step
-
-
-def make_patched_handle_client_request(original):
-    """Dispatch GR wire types and isolate expected ADD admission rejections.
-
-    The socket adapter queues each complete GR batch without admitting it.
-    This wrapper admits the batch on the core thread, where Scheduler
-    failures can be returned to the requesting client. Native ADD keeps
-    upstream shutdown and DP handling.
-    """
-    if getattr(original, _CLIENT_REQUEST_PATCH_MARKER, False):
-        return original
-
-    @wraps(original)
-    def patched_handle_client_request(self, request_type, request, *args, **kwargs):
-        from vllm.v1.engine import EngineCoreRequestType
-
-        from vllm_gr.v1.engine.core import (
-            dispatch_gr_engine_core_input,
-            send_gr_rejection,
-        )
-        from vllm_gr.v1.engine.gr_async_scheduler import GRAdmissionError
-
-        if (
-            request_type == EngineCoreRequestType.SUBMIT_GR_SESSION
-            and request.items
-            and self._reject_add_in_shutdown(request.items[0].request)
-        ):
-            return None
-
-        try:
-            if dispatch_gr_engine_core_input(self, request_type, request):
-                return None
-        except GRAdmissionError as error:
-            if request_type != EngineCoreRequestType.SUBMIT_GR_SESSION:
-                raise
-            native_request = request.items[0].request
-            logger.warning(
-                "Rejecting GR batch %s during admission: %s",
-                request.batch_id,
-                error,
-            )
-            send_gr_rejection(self, native_request, str(error))
-            return None
-        if request_type == EngineCoreRequestType.ADD:
-            # Admission runs here, after the socket thread has queued ADD.
-            # Preserve upstream shutdown/DP handling and catch only explicit
-            # GR rejections. Internal failures still reach the fatal handler.
-            try:
-                return original(self, request_type, request, *args, **kwargs)
-            except GRAdmissionError as error:
-                native_request, _request_wave = request
-                logger.warning(
-                    "Rejecting request %s during GR admission: %s",
-                    native_request.request_id,
-                    error,
-                )
-                # A bare error output is indistinguishable from an engine
-                # fault at the frontend, which then reports the rejection as
-                # a server error. Carry the reason with the terminal status.
-                send_gr_rejection(self, native_request, str(error))
-                return None
-        return original(self, request_type, request, *args, **kwargs)
-
-    setattr(patched_handle_client_request, _CLIENT_REQUEST_PATCH_MARKER, True)
-    return patched_handle_client_request
-
-
-# ---------------------------------------------------------------------------
-# Child-process patch applicator — called from patched run_engine_core
-# ---------------------------------------------------------------------------
-
-
-def apply_engine_core_request_patches() -> None:
-    """Install V1 session admission and native request dispatch."""
-    from vllm.v1.engine.core import DPEngineCoreProc, EngineCore, EngineCoreProc
-
-    from vllm_gr.v1.engine.hot_update import install_core_hot_update_hooks
-
-    install_core_hot_update_hooks(EngineCore)
-
-    from vllm_gr.v1.engine.core import (
-        _handle_submit_gr_session,
-        is_gr_session_retired,
-        process_input_sockets,
-    )
-
-    logger.info("[vllm-gr] apply_engine_core_child_patches called.")
-
-    register_engine_core_request_types()
-    from vllm_gr.v1.beam.token_buffer import (
-        install_numpy_request_factory,
-        install_numpy_scheduler_data,
-    )
-
-    install_numpy_request_factory()
-    install_numpy_scheduler_data()
-
-    EngineCore.__init__ = make_patched_engine_init(EngineCore.__init__)
-
-    EngineCore.is_gr_session_retired = is_gr_session_retired
-    EngineCore._handle_submit_gr_session = _handle_submit_gr_session
-    EngineCoreProc._handle_submit_gr_session = _handle_submit_gr_session
-
-    # Narrow GR dispatch on the busy-loop request handler so in-process
-    # EngineCore and any GR type that misses the socket adapter still land.
-    EngineCoreProc._handle_client_request = make_patched_handle_client_request(
-        EngineCoreProc._handle_client_request
-    )
-    DPEngineCoreProc._handle_client_request = make_patched_handle_client_request(
-        DPEngineCoreProc._handle_client_request
-    )
-
-    # vLLM-version adapter: capture the upstream loop once, then install ours.
-    global UPSTREAM_PROCESS_INPUT_SOCKETS
-    current_pis = EngineCoreProc.process_input_sockets
-    if UPSTREAM_PROCESS_INPUT_SOCKETS is None and current_pis is not process_input_sockets:
-        UPSTREAM_PROCESS_INPUT_SOCKETS = current_pis
-    EngineCoreProc.process_input_sockets = process_input_sockets
-    setattr(EngineCoreProc.process_input_sockets, _PIS_PATCH_MARKER, True)
-
-    # Preserve V1 progress-aware backoff without legacy step chaining.
-    EngineCoreProc._process_engine_step = make_patched_process_engine_step(
-        EngineCoreProc._process_engine_step
-    )
-
-    EngineCore._patched_for_beam_requests = True
-    EngineCoreProc._patched_for_beam_requests = True
-    logger.debug("Engine-core request patches applied.")
-
-
-def apply_engine_core_child_patches() -> None:
-    """Compatibility helper that installs all EngineCore-side capabilities.
-
-    This is called by the process-entry wrapper in a freshly spawned
-    interpreter. Each capability has its own idempotent applicator so a
-    partially initialized process can be checked and repaired explicitly.
-    """
-    from vllm_gr.v1.worker.model_runner_patch import apply_worker_patches
-
-    apply_engine_core_request_patches()
-    apply_kv_hash_memo_patch()
-    apply_scheduler_patch()
-    apply_worker_patches()
-
-
-# Re-entry guard to detect recursive calls
-_run_engine_core_active = False
-
-
-def run_engine_core(
-    *args,
-    dp_rank: int = 0,
-    local_dp_rank: int = 0,
-    **kwargs,
-):
-    """Wrapper for EngineCoreProc.run_engine_core that applies patches
-    before the engine starts.  This is a module-level function so that
-    multiprocessing 'spawn' can pickle it by qualified name.
-
-    In the spawned child process, all modules are freshly imported, so
-    EngineCoreProc.run_engine_core is the original unpatched version.
-    We apply our patches first, then delegate to the original.
-    """
-    global _run_engine_core_active
-
-    # Re-entry guard: detect if we're already inside run_engine_core
-    if _run_engine_core_active:
-        raise RuntimeError(
-            "run_engine_core re-entry detected. This indicates a recursive "
-            "call, likely due to patching being applied multiple times. "
-            "Check that patch_batch_and_fork() is only called once."
-        )
-
-    from vllm.v1.engine.core import EngineCoreProc
-
-    # Guard against recursion: if vllm_gr/init.py was auto-imported in
-    # the child process, run_patch() will have replaced
-    # EngineCoreProc.run_engine_core with *this* function again.
-    # Use the saved original stashed by patch_batch_and_fork() if
-    # available; otherwise fall back to the current class attribute
-    # (which is the unpatched original in a fresh child interpreter).
-    original_run = getattr(run_engine_core, "_original_run_engine_core", None)
-
-    # Validate the saved original
-    if original_run is not None and original_run is not run_engine_core:
-        # We have a saved original that isn't ourselves - validate it
-        if not callable(original_run):
-            raise RuntimeError(
-                f"run_engine_core._original_run_engine_core is not callable: "
-                f"type={type(original_run)}"
-            )
-    else:
-        # No saved original (or it points to ourselves, which is invalid)
-        # Fall back to the current class attribute (should be the original in a fresh process)
-        if original_run is run_engine_core:
-            logger.warning(
-                "run_engine_core._original_run_engine_core points to itself. "
-                "This may indicate corrupted patch state from a previous run. "
-                "Falling back to EngineCoreProc.run_engine_core."
-            )
-        original_run = EngineCoreProc.run_engine_core
-
-    # Final validation: ensure we didn't end up with ourselves
-    if original_run is run_engine_core:
-        raise RuntimeError(
-            "run_engine_core recursion detected: EngineCoreProc.run_engine_core "
-            "points to this wrapper. This indicates that patching was applied "
-            "but the original was not saved, or the child process imported "
-            "vllm_gr before starting."
-        )
-
-    # Validate that original_run looks like a real function from vllm
-    # (Skip validation for test mocks)
-    if hasattr(original_run, "__module__"):
-        original_module = original_run.__module__
-        expected_module = "vllm.v1.engine.core"
-        # Skip warning for unittest mocks (used in tests)
-        if original_module not in (expected_module, "unittest.mock", "mock"):
-            logger.warning(
-                "Unexpected module for original run_engine_core: %s (expected %s). "
-                "Proceeding anyway, but this may indicate an issue.",
-                original_module,
-                expected_module,
-            )
-
-    # Set re-entry guard and apply patches
-    _run_engine_core_active = True
-    try:
-        # Use the shared initialization mechanism with an EngineCore-only
-        # plan. In a spawned child this repairs targets that became importable
-        # only after the frontend initialized without importing API modules.
-        from vllm_gr.patch import initialize_engine_core_beam_patches
-
-        initialize_engine_core_beam_patches()
-        original_run(
-            *args,
-            dp_rank=dp_rank,
-            local_dp_rank=local_dp_rank,
-            **kwargs,
-        )
-    finally:
-        _run_engine_core_active = False
+        return engine_core_patch.UPSTREAM_PROCESS_INPUT_SOCKETS
+    raise AttributeError(name)
 
 
 def _expand_gr_abort_request_ids(scheduler, request_ids, finished_status):

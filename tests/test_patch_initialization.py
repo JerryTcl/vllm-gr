@@ -190,7 +190,7 @@ def test_engine_core_child_uses_minimal_authoritative_initialization_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import vllm_gr.patch as runtime_patch
-    from vllm_gr.v1.engine import engine_core_patch
+    from vllm_gr.engine import engine_core_patch
 
     calls: list[str] = []
 

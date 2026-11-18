@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from vllm_gr.v1.engine.engine_core_patch import make_patched_process_engine_step
+from vllm_gr.engine.engine_core_patch import make_patched_process_engine_step
 
 
 def _native_step(engine: Any) -> bool:
@@ -33,7 +33,7 @@ def test_progress_backoff_preserves_native_outputs(
     has_requests: bool,
     should_sleep: bool,
 ) -> None:
-    from vllm_gr.v1.engine import engine_core_patch
+    from vllm_gr.engine import engine_core_patch
 
     events: list[Any] = []
     sleep = Mock()

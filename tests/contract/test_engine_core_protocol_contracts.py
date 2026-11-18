@@ -3,6 +3,7 @@
 # mypy: ignore-errors
 """Production V1 transport inventory; retired message bytes stay reserved."""
 
+import importlib
 from contextlib import contextmanager
 from queue import Queue
 from threading import Event, Thread
@@ -412,6 +413,43 @@ def test_gr_dispatch_only_admits_v1(monkeypatch) -> None:
         engine, EngineCoreRequestType.SUBMIT_GR_SESSION, batch
     )
     assert handled == [(engine, batch)]
+
+
+@pytest.mark.l1
+@pytest.mark.parametrize(
+    ("old", "owner"),
+    [
+        ("engine.arg_utils_gr", "engine.arg_utils"),
+        ("v1.engine.async_llm", "engine.output_processor"),
+        ("v1.engine.npu_admission", "platforms.npu_admission"),
+        *(
+            (f"v1.engine.{name}", f"engine.{name}")
+            for name in (
+                "codec",
+                "core",
+                "core_client",
+                "core_client_patch",
+                "gr_session_client",
+                "hot_update",
+                "wire",
+            )
+        ),
+    ],
+)
+def test_legacy_engine_import_uses_same_module(old, owner):
+    assert importlib.import_module(f"vllm_gr.{old}") is importlib.import_module(f"vllm_gr.{owner}")
+
+
+@pytest.mark.l1
+def test_legacy_engine_symbols_resolve_to_runtime_owners():
+    from vllm_gr.engine import core_client, core_socket, engine_core_patch
+    from vllm_gr.v1.engine import core, core_client_patch
+    from vllm_gr.v1.engine import engine_core_patch as legacy_patch
+
+    assert core.process_input_sockets is core_socket.process_input_sockets
+    assert core_client_patch.inproc_engine_failure is core_client.inproc_engine_failure
+    assert legacy_patch.run_engine_core is engine_core_patch.run_engine_core
+    assert legacy_patch.run_engine_core.__module__ == "vllm_gr.engine.engine_core_patch"
 
 
 pytestmark = pytest.mark.cpu_test
