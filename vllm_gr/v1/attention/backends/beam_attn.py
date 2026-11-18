@@ -33,6 +33,12 @@ from vllm_gr.v1.attention.backends.beam_attn_metadata import (
     _get_fp8_dtype_for_flashattn,
     require_beam_decode_session,
 )
+from vllm_gr.v1.attention.backends.beam_dense_prefill import (
+    DENSE_PREFILL_MODES as _DENSE_PREFILL_MODES,
+)
+from vllm_gr.v1.attention.backends.beam_dense_prefill import (
+    ENV_DENSE_PREFILL,
+)
 
 __all__ = [
     "BeamAttentionBackend",
@@ -114,10 +120,6 @@ def _get_platform_execution_module() -> ModuleType:
         "BeamAttention requires exactly one active CUDA or NPU device "
         f"(CUDA_DEVICE={CUDA_DEVICE}, NPU_DEVICE={NPU_DEVICE})."
     )
-
-
-ENV_DENSE_PREFILL = "VLLM_GR_DENSE_PREFILL"
-_DENSE_PREFILL_MODES = ("fa2", "cudnn")
 
 
 def _resolve_dense_prefill_mode() -> str | None:

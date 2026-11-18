@@ -50,6 +50,15 @@ the whole batch on the paged path. `VLLM_BATCH_INVARIANT`, layers with sliding
 windows, ALiBi, softcap or sinks, quantized KV caches, KV sharing and NPU also
 keep the paged path. If cuDNN cannot serve the shape, dense FA2 is used.
 
+A CUDA graph freezes the choice made at capture, so the CPU check alone is not
+enough: native decode capture uses `seq_len == query_len == 1` dummies and then
+replays over cached context. While a stream is capturing, dense attention is
+selected only inside the fresh-Prefill scope that the GR Prefill runners (V1 and
+V2) open; all other captures keep the paged path. With dense Prefill requested,
+those runners replay a FULL Prefill graph only when every scheduled request has
+no computed tokens; otherwise V2 uses its PIECEWISE graph and V1 the native path,
+where attention runs eagerly with the CPU check.
+
 ## ModelRunner V2: use the native capture plan
 
 V2 consumes the resolved `compilation_config.cudagraph_capture_sizes` list.

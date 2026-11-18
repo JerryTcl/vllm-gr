@@ -83,4 +83,28 @@ def test_dense_prefill_kwargs_forward_fresh_kv_only(changes, forwards):
     assert beam_attn._dense_prefill_kwargs(impl, None, value) == {}
 
 
+def test_fresh_prefill_capture_scope_and_replay_requirement(monkeypatch):
+    from vllm_gr.v1.attention.backends import beam_dense_prefill as dense
+
+    assert not dense.in_fresh_prefill_capture()
+    with dense.fresh_prefill_capture():
+        assert dense.in_fresh_prefill_capture()
+        with pytest.raises(RuntimeError), dense.fresh_prefill_capture():
+            raise RuntimeError
+        assert dense.in_fresh_prefill_capture()
+    assert not dense.in_fresh_prefill_capture()
+    for raw, expected in (
+        (None, False),
+        ("off", False),
+        ("bogus", False),
+        ("FA2", True),
+        ("cudnn", True),
+    ):
+        if raw is None:
+            monkeypatch.delenv(dense.ENV_DENSE_PREFILL, raising=False)
+        else:
+            monkeypatch.setenv(dense.ENV_DENSE_PREFILL, raw)
+        assert dense.requires_fresh_prefill_replay() is expected
+
+
 pytestmark = [pytest.mark.cpu_test, pytest.mark.l1]

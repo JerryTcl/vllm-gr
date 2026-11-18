@@ -28,6 +28,7 @@ from vllm_gr.v1.attention.backends.beam_attn_metadata import (
     require_beam_decode_session,
     resolve_beam_pool,
 )
+from vllm_gr.v1.attention.backends.beam_dense_prefill import in_fresh_prefill_capture
 
 logger = init_logger(__name__)
 
@@ -283,8 +284,9 @@ def _dense_prefill_attention(
     Without cached context, request K/V rows align with its query rows, so
     ``cu_seqlens_k == cu_seqlens_q``. Reading the paged cache forces FA2's
     split-KV kernel (BlockM=64); the dense FA2 kernel (BlockM=128) and cuDNN
-    are faster on long prompts. Returns False when the layer configuration is
-    unsupported, leaving the caller on the paged path.
+    are faster on long prompts. Returns False when the layer configuration,
+    capture scope or request lengths do not allow it, leaving the caller on the
+    paged path. See ``beam_dense_prefill`` for the capture/replay contract.
     """
     if (
         not causal
@@ -293,6 +295,10 @@ def _dense_prefill_attention(
         or logits_soft_cap
         or (sliding_window_size is not None and tuple(sliding_window_size) != (-1, -1))
         or key.dtype != query.dtype
+        # A graph freezes this choice: outside a fresh-Prefill capture (e.g. a
+        # native decode capture from seq_len == 1 dummies) replay would see
+        # cached context, so only the paged path is safe.
+        or (torch.cuda.is_current_stream_capturing() and not in_fresh_prefill_capture())
         or not _all_fresh_prompts(attn_metadata)
     ):
         return False

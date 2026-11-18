@@ -186,3 +186,67 @@ def test_dense_prefill_declines_unsupported_layer():
         dense_mode="fa2",
     )
     torch.testing.assert_close(dense, paged, atol=0, rtol=0)
+
+
+def _capture(q, key_cache, value_cache, meta, out, **kwargs):
+    run = lambda: prefill_attention(  # noqa: E731
+        output=out,
+        query=q,
+        key_cache=key_cache,
+        value_cache=value_cache,
+        attn_metadata=meta,
+        sliding_window_size=(-1, -1),
+        scale=SCALE,
+        logits_soft_cap=0.0,
+        vllm_flash_attn_version=2,
+        **kwargs,
+    )
+    run()  # warm up outside capture, as the graph runners do
+    torch.accelerator.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run()
+    return graph
+
+
+@torch.inference_mode()
+@pytest.mark.parametrize("mode", [None, "fa2", "cudnn"])
+def test_decode_graph_capture_keeps_paged_attention(mode):
+    """A native decode capture must not freeze dense attention.
+
+    Native decode capture uses seq_len == query_len == 1 dummies, which pass the
+    CPU length check; the graph then replays with the request's cached context.
+    """
+    q, k, v, key_cache, value_cache, meta, expected = _case((1,), (256,))
+    meta.seq_lens.fill_(1)
+    meta.seq_lens_cpu = [1]
+    kwargs = {} if mode is None else {"dense_key": k, "dense_value": v, "dense_mode": mode}
+    out = torch.zeros_like(q)
+    graph = _capture(q, key_cache, value_cache, meta, out, **kwargs)
+    # Replay as a real decode step: same buffers, 256 cached context tokens.
+    meta.seq_lens.fill_(257)
+    meta.seq_lens_cpu = [257]
+    out.zero_()
+    graph.replay()
+    torch.accelerator.synchronize()
+    _check(out, expected)
+
+
+@torch.inference_mode()
+@pytest.mark.parametrize("mode", ["fa2", "cudnn"])
+def test_fresh_prefill_capture_scope_captures_dense_attention(mode):
+    from vllm_gr.v1.attention.backends.beam_dense_prefill import fresh_prefill_capture
+
+    q, k, v, key_cache, value_cache, meta, expected = _case((600,))
+    # A zeroed paged cache can only reproduce the reference via the dense path.
+    key_cache.zero_()
+    value_cache.zero_()
+    out = torch.zeros_like(q)
+    with fresh_prefill_capture():
+        graph = _capture(
+            q, key_cache, value_cache, meta, out, dense_key=k, dense_value=v, dense_mode=mode
+        )
+    out.zero_()
+    graph.replay()
+    torch.accelerator.synchronize()
+    _check(out, expected)
