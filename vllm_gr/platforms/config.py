@@ -25,6 +25,10 @@ class BackendConfigService:
     supports_constraint_vocab_slicing = False
     supports_sid_stage_vocab = False
 
+    def startup_inputs(self, gr: GRConfig, admitted: Mapping[str, Any] | None) -> dict[str, Any]:
+        """Return provider-owned host options used when constructing the backend plan."""
+        return {}
+
     def apply_native_defaults(self, config: Any) -> None:
         pass
 

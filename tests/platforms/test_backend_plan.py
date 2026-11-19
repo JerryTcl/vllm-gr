@@ -348,6 +348,63 @@ def test_worker_configuration_drift_fails_before_any_factory(provider: Provider)
     assert provider.created == []
 
 
+def test_incremental_attention_missing_suffix_writer_aborts_binding(
+    provider: Provider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import Mock
+
+    from vllm_gr.config import GRAttentionBackend
+    from vllm_gr.platforms.attention import (
+        for_config,
+        loading_attention,
+        validate_beam_attention,
+    )
+
+    native = config()
+    GRConfig(
+        attention_backend=GRAttentionBackend.CUSTOM,
+        beam_max_width=2,
+    ).write_to_vllm_config(native)
+
+    class SelectedImpl:
+        validate_gr_attention_executor = staticmethod(validate_beam_attention)
+
+    native.compilation_config = SimpleNamespace(
+        static_forward_context={
+            "attention": SimpleNamespace(attn_backend=object(), impl=SelectedImpl())
+        }
+    )
+    admit_backend_plan(native)
+    runner = SimpleNamespace(vllm_config=native, device="test:0")
+    adapter = Mock(
+        stage=Mock(
+            implementation_id="test.stage",
+            worker_decision=False,
+            decision=Mock(implementation_id="test.decision"),
+        )
+    )
+    monkeypatch.setattr(provider, "create_model_runner_adapter", lambda **kwargs: adapter)
+    executor = SimpleNamespace(
+        is_available=lambda: True,
+        get_flash_attn_version=lambda **kwargs: None,
+        supports_sinks=lambda: False,
+        reshape_and_cache=lambda *args: None,
+        cascade_attention=lambda **kwargs: None,
+        close=Mock(),
+    )
+    factory = Mock(return_value=executor)
+    monkeypatch.setattr(provider, "create_attention_executor", factory)
+    with pytest.raises(RuntimeError, match="cache_unshared_kv"), loading_attention(runner):
+        assert for_config().primitives is executor
+        worker_backend_readiness(SimpleNamespace(model_runner=runner))
+
+    factory.assert_called_once()
+    executor.close.assert_called_once_with()
+    adapter.close.assert_called_once_with()
+    assert getattr(runner, "_gr_backend_binding", None) is None
+    assert not hasattr(runner, "_gr_loading_attention")
+
+
 def test_readiness_preserves_binding_after_native_kv_cache_autofit(provider: Provider) -> None:
     native = config()
     native.model_config = SimpleNamespace(max_model_len=4096)

@@ -4,12 +4,14 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import asdict
 from enum import Enum
 from importlib import metadata
 from typing import Any
 
+from .config import provider_config_service
 from .loader import external_provider_entry_points
 from .plan import BACKEND_PLAN_KEY, BackendPlan, BackendRequest, PlanData
 
@@ -85,7 +87,9 @@ def provider_compatibility(provider: Any) -> PlanData:
     )
 
 
-def normalize_backend_request(config: Any, provider: Any) -> BackendRequest:
+def normalize_backend_request(
+    config: Any, provider: Any, *, admitted: BackendPlan | None = None
+) -> BackendRequest:
     from vllm_gr.config import GRConfig
 
     native: dict[str, Any] = {}
@@ -97,6 +101,8 @@ def normalize_backend_request(config: Any, provider: Any) -> BackendRequest:
         if section == "model_config" and values["dtype"] is not None:
             values["dtype"] = str(values["dtype"])
         native[section] = values
+    native["has_kv_transfer"] = getattr(config, "kv_transfer_config", None) is not None
+    native["kv_cache_layout"] = os.environ.get("VLLM_KV_CACHE_LAYOUT")
     native["use_v2_model_runner"] = bool(getattr(config, "use_v2_model_runner", False))
     model = getattr(config, "model_config", None)
     text_config = getattr(model, "hf_text_config", None)
@@ -111,9 +117,18 @@ def normalize_backend_request(config: Any, provider: Any) -> BackendRequest:
             "vocab_size",
         )
     }
+    # A worker checks the engine's admitted startup options. Its environment
+    # can also belong to a co-resident engine with a different attention policy.
+    gr = GRConfig.from_vllm_config(config)
+    startup_inputs = getattr(provider_config_service(provider), "startup_inputs", None)
+    if startup_inputs is not None:
+        admitted_inputs = admitted.request.native.to_dict() if admitted is not None else None
+        options = startup_inputs(gr, admitted_inputs)
+        if set(native).intersection(options):
+            raise ValueError("Provider startup inputs collide with native plan fields")
+        native.update(options)
     additional = getattr(config, "additional_config", None)
     options = additional.get(BACKEND_OPTIONS_KEY, {}) if isinstance(additional, Mapping) else {}
-    gr = GRConfig.from_vllm_config(config)
     table = gr.constraint_table
     gr_fields = asdict(gr)
     # Retain the plan API fields while GR derives them from its canonical settings.

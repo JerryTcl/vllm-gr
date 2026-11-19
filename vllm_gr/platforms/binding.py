@@ -11,6 +11,7 @@ from functools import wraps
 from types import ModuleType
 from typing import Any
 
+from .attention import bind_attention, loading_attention, validate_selected_attention
 from .plan import BackendPlan, read_backend_plan
 from .planning import normalize_backend_request, resolve_backend_plan
 
@@ -65,6 +66,7 @@ class BackendBinding:
     attention_executor: Any
     constraint_execution: Any
     canonical_constraint_id: str | None = None
+    attention_surface: Any = None
 
     def report(self) -> dict[str, Any]:
         services = {
@@ -91,6 +93,10 @@ def _clear_unplanned_stage(runner: Any, keep: Any = None) -> None:
 
 
 def close_backend_binding(runner: Any) -> None:
+    native_attention = getattr(runner, "_gr_native_attention", None)
+    if native_attention is not None:
+        del runner._gr_native_attention
+        _close_services([native_attention])
     binding = getattr(runner, _BINDING_ATTR, None)
     setattr(runner, _BINDING_ATTR, None)
     adapter = binding.runner_adapter if binding is not None else None
@@ -100,7 +106,12 @@ def close_backend_binding(runner: Any) -> None:
             runner._gr_constraint_execution = None
             runner._gr_constraint_plan_fingerprint = None
         _close_services(
-            [binding.runner_adapter, binding.attention_executor, binding.constraint_execution]
+            [
+                binding.runner_adapter,
+                binding.attention_executor,
+                binding.attention_surface,
+                binding.constraint_execution,
+            ]
         )
 
 
@@ -122,7 +133,9 @@ def bind_backend_services(runner: Any) -> BackendBinding | None:
         # Readiness attests the admitted plan and the services already bound.
         return existing
     provider = activate_current_backend()
-    local = resolve_backend_plan(provider, normalize_backend_request(config, provider))
+    local = resolve_backend_plan(
+        provider, normalize_backend_request(config, provider, admitted=plan)
+    )
     if local.fingerprint != plan.fingerprint:
         raise RuntimeError(
             f"Worker backend plan mismatch: engine={plan.fingerprint}, worker={local.fingerprint}"
@@ -165,11 +178,14 @@ def bind_backend_services(runner: Any) -> BackendBinding | None:
             ):
                 raise RuntimeError("Worker did not bind a Beam decision operator")
         attention = None
+        attention_surface = None
         if "attention" in required:
-            attention = selected.create_attention_executor(plan=plan, device=device)
-            created.append(attention)
+            attention, attention_surface = bind_attention(runner, selected, plan)
+            created.extend((attention, attention_surface))
             if attention is None:
                 raise RuntimeError("Backend did not bind the required attention executor")
+            if plan.request.uses_custom_attention:
+                validate_selected_attention(runner, attention, plan)
         constraint = None
         canonical = None
         if plan.constraint_mode == "legacy":
@@ -195,7 +211,7 @@ def bind_backend_services(runner: Any) -> BackendBinding | None:
             if canonical is None:
                 raise RuntimeError("Required canonical constraint backend was not loaded")
         binding = BackendBinding(
-            plan, adapter, attention, constraint, _implementation_id(canonical)
+            plan, adapter, attention, constraint, _implementation_id(canonical), attention_surface
         )
         validate_required_services(plan, required, binding.report()["services"], "Backend worker")
         setattr(runner, _BINDING_ATTR, binding)
@@ -221,12 +237,16 @@ def bind_after_model_load(
         if close_runtime is not None:
             # Reject undrained native work before replacing the current generation.
             close_runtime(self)
-        if getattr(self, _BINDING_ATTR, None) is not None:
-            # A full load constructs a new model even when its plan is unchanged.
+        if (
+            getattr(self, _BINDING_ATTR, None) is not None
+            or getattr(self, "_gr_native_attention", None) is not None
+        ):
+            # A full load builds new layers even when its admitted plan is unchanged.
             close_backend_binding(self)
         try:
-            result = original(self, *args, **kwargs)
-            bind_backend_services(self)
+            with loading_attention(self):
+                result = original(self, *args, **kwargs)
+                bind_backend_services(self)
         except BaseException:
             if close_runtime is not None:
                 try:

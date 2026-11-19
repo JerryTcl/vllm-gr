@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from ..config import BackendConfigService
@@ -14,6 +16,15 @@ if TYPE_CHECKING:
 class CudaConfigService(BackendConfigService):
     default_worker_decision = True
     supports_constraint_vocab_slicing = True
+
+    def startup_inputs(self, gr: GRConfig, admitted: Mapping[str, Any] | None) -> dict[str, Any]:
+        if admitted is not None:
+            invariant = admitted.get("dense_prefill_batch_invariant", False)
+        else:
+            invariant = gr.deployment.dense_prefill != "off" and bool(
+                int(os.environ.get("VLLM_BATCH_INVARIANT", "0"))
+            )
+        return {"dense_prefill_batch_invariant": invariant}
 
     def finalize_native_config(self, config: Any, gr: GRConfig) -> None:
         compilation = getattr(config, "compilation_config", None)

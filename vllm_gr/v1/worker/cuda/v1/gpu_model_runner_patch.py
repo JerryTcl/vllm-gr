@@ -11,6 +11,9 @@ import torch
 from vllm.logger import init_logger
 
 from vllm_gr.platforms.cuda.runner import V1_RUNNER
+from vllm_gr.v1.attention.backends.beam_dense_prefill import (
+    requires_fresh_prefill_replay,
+)
 from vllm_gr.v1.beam.execution_batch import (
     BeamBatchExecutionView,
     BeamExecutionContractError,
@@ -401,9 +404,6 @@ def capture_beam_decode_graph(runner) -> bool:
     Returns True if a graph was captured.
     """
     from vllm_gr.v1.worker.cuda.beam_decode_graph import get_beam_decode_graph
-    from vllm_gr.v1.worker.gr_context import (
-        _get_gr_config,
-    )
 
     gr_cfg = _get_gr_config(runner)
     if (
@@ -564,7 +564,7 @@ def make_patched_model_forward_gpu(_orig_model_forward):
                 and is_prefill_phase_batch(self, scheduler_output)
                 # Dense-Prefill graphs replay only for fresh prompts.
                 and (
-                    _get_gr_config(self).deployment.dense_prefill == "off"
+                    not requires_fresh_prefill_replay(self)
                     or scheduled_requests_are_fresh(self, scheduler_output)
                 )
             ):

@@ -12,6 +12,7 @@ from typing import Any, Literal
 import pytest
 import torch
 
+from tests.helpers.attention import bind_attention
 from tests.helpers.gr_config import engine_args_from_file, make_gr_config
 from vllm_gr.config import GRConfig, gr_config_from_mapping, gr_config_to_mapping
 from vllm_gr.platforms.legacy import legacy_config_service
@@ -261,9 +262,7 @@ def test_fusion_preserves_platform_auto_selection(
     monkeypatch.setattr(
         flash_backend, "is_fa_version_supported", lambda version: version in (2, default_version)
     )
-    monkeypatch.setattr(beam_attn, "CUDA_DEVICE", True)
-    monkeypatch.setattr(beam_attn, "NPU_DEVICE", False)
-    monkeypatch.setattr(beam_attn, "_get_platform_execution_module", lambda: beam_attn_gpu)
+    bind_attention(monkeypatch, beam_attn, cuda=True, execution=lambda: beam_attn_gpu)
     # Exercise the installed vLLM selector, including device fallbacks.
     if fa_version == 3 and capability == 8:
         pytest.skip("explicit FA3 is not supported on SM8x")
@@ -738,12 +737,11 @@ def test_layer_constructor_validates_before_execution(
         **({"enable_short_suffix_attention": enabled} if enabled is not None else {}),
     ).write_to_vllm_config(config)
     monkeypatch.setattr(vllm.config, "get_current_vllm_config_or_none", lambda: config)
-    monkeypatch.setattr(beam_attn, "CUDA_DEVICE", cuda)
-    monkeypatch.setattr(beam_attn, "NPU_DEVICE", not cuda)
-    monkeypatch.setattr(
+    bind_attention(
+        monkeypatch,
         beam_attn,
-        "_get_platform_execution_module",
-        lambda: SimpleNamespace(get_flash_attn_version=lambda **kwargs: 2),
+        cuda=cuda,
+        execution=lambda: SimpleNamespace(get_flash_attn_version=lambda **kwargs: 2),
     )
     kwargs: dict[str, Any] = {
         "num_heads": 16,

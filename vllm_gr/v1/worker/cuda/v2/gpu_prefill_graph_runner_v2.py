@@ -23,8 +23,10 @@ from vllm.v1.worker.gpu.cudagraph_utils import (
     ModelCudaGraphManager,
 )
 
-from vllm_gr.config.models import deployment_for
-from vllm_gr.v1.attention.backends.beam_dense_prefill import fresh_prefill_capture
+from vllm_gr.v1.attention.backends.beam_dense_prefill import (
+    fresh_prefill_capture,
+    requires_fresh_prefill_replay,
+)
 from vllm_gr.v1.worker.cudagraph_capture import is_recoverable_capture_error
 from vllm_gr.v1.worker.prefill_graph_common import (
     get_default_buckets,
@@ -175,7 +177,7 @@ class GRPrefillCudaGraphManager(ModelCudaGraphManager):
         native = runner.cudagraph_manager
         self.plan = plan
         self.runner = runner
-        self._require_fresh = deployment_for(runner.vllm_config).dense_prefill != "off"
+        self._require_fresh = requires_fresh_prefill_replay(runner)
         self._prefill_scope: Any = None
         self._capture_finished = False
         self._successful: set[BatchExecutionDescriptor] = set()
