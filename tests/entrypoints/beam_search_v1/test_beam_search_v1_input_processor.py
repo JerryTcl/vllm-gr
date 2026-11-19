@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -682,6 +683,32 @@ def test_request_rejects_width_below_fixed_runtime_before_submission(device: str
             online=True,
         )
     engine.submit_gr_session.assert_not_called()
+
+
+@pytest.mark.l1  # type: ignore[misc]
+def test_request_honors_an_admitted_external_constraint_implementation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vllm_gr.platforms import loader
+    from vllm_gr.platforms.cuda import CUDABackendProvider
+    from vllm_gr.platforms.planning import admit_backend_plan
+
+    canonical = _canonical_gr_config(backend="cpu")
+    canonical["gr"]["constraint_table"].update(
+        implementation_id="vendor-candidates", path=str(tmp_path / "fixture.safetensors")
+    )
+    engine = _make_engine(additional_config={"vllm_gr": canonical})
+    engine.vllm_config.device_config = SimpleNamespace(device="cuda")
+    monkeypatch.setattr(loader, "activate_current_backend", CUDABackendProvider)
+    plan = admit_backend_plan(engine.vllm_config)
+    assert (
+        plan is not None
+        and plan.choices.to_dict()["constraint_implementation"] == "vendor-candidates"
+    )
+    request = _prepare_request(
+        engine, [1, 2], BeamSearchParams(beam_width=2, max_tokens=3, ignore_eos=True), online=True
+    )
+    assert request.beam_params.beam_width == 2
 
 
 def test_npu_request_accepts_matching_width_and_canonical_backend() -> None:

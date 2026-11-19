@@ -12,6 +12,7 @@ from unittest.mock import Mock
 import pytest
 
 from tests.helpers.gr_config import engine_args_from_file, make_gr_config
+from tests.helpers.platforms import config_provider
 from vllm_gr.config import (
     ConstraintTableBackendEnum,
     ConstraintTableSpec,
@@ -20,6 +21,7 @@ from vllm_gr.config import (
     write_canonical_gr_config,
 )
 from vllm_gr.platforms.legacy import legacy_config_service
+from vllm_gr.platforms.plan import read_backend_plan
 from vllm_gr.v1.engine.beam_search_v1 import validate_gr_device_config
 
 _V1_REQUIRED = "NPU unconstrained.*ModelRunner V1.*VLLM_USE_V2_MODEL_RUNNER=0"
@@ -43,7 +45,7 @@ def _gr_config(mode: str, *, canonical: bool = False, device: str = "npu") -> GR
         common["constraint_table"] = ConstraintTableSpec(
             max_top_k=4,
             enabled=True,
-            backend=ConstraintTableBackendEnum.NPU,
+            backend=ConstraintTableBackendEnum(device),
             path=str(Path(__file__).resolve().with_name("catalog.npz")),
             artifact_digest="sha256:" + "a" * 64,
             tokenizer_digest="sha256:" + "b" * 64,
@@ -255,6 +257,7 @@ def test_device_admission_preserves_supported_and_existing_paths(
         ("cuda", False, "generic"),
         ("cuda", True, "generic"),
         ("npu", True, "catalog"),
+        ("cuda", True, "catalog"),
         ("npu", True, "ordinary"),
         ("npu", True, "ordinary_unconstrained"),
     ],
@@ -269,12 +272,14 @@ def test_engine_config_preserves_supported_and_existing_paths(
     gr_config = _gr_config(mode, canonical=True, device=device)
     args = engine_args_from_file(tmp_path, gr_config_to_mapping(gr_config))
     monkeypatch.setattr(arg_utils_gr, "origin_create_engine_config", lambda *a: config)
-    monkeypatch.setattr(
-        arg_utils_gr, "engine_config_service", lambda: legacy_config_service(device)
-    )
     monkeypatch.setattr(ascend_compat, "apply_engine_core_config_sanitizer", Mock())
 
-    assert arg_utils_gr.create_engine_config(args) is config
+    with config_provider(device) as provider:
+        assert arg_utils_gr.create_engine_config(args) is config
+    if mode == "catalog":
+        plan = read_backend_plan(config)
+        assert plan is not None and plan.backend_id == provider.backend_id
+        assert plan.constraint_implementation == device
     effective = GRConfig.from_vllm_config(config)
     assert effective.constraint_config.mode is gr_config.constraint_config.mode
     assert effective.beam_sid_stage_vocab == gr_config.beam_sid_stage_vocab

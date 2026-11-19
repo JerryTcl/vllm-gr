@@ -205,6 +205,23 @@ class ConstraintTableSpec:
         },
     )
     """Execution placement of the constraint table."""
+    implementation_id: str | None = field(
+        default=None,
+        kw_only=True,
+        metadata={
+            "gr": ConfigFieldSpec(
+                "validate_constraint_implementation_id",
+                canonical_path=("implementation_id",),
+            )
+        },
+    )
+    """Registered implementation that executes the table.
+
+    ``None`` keeps the historical behavior: the ``backend`` enum selects the
+    implementation that has always served it. An explicit ID is resolved through
+    the constraint registry, so an implementation registered by an external
+    package runs without editing a core enum or a selection table.
+    """
     max_top_k: int | None = field(
         default=None,
         metadata={
@@ -580,6 +597,7 @@ class GRConfig:
                 table=ConstraintTableSpec(
                     max_top_k=constraint_table.max_top_k,
                     backend=ConstraintBackendKind(constraint_table.backend.value),
+                    implementation_id=constraint_table.implementation_id,
                     path=constraint_table.path,
                     format=constraint_table.format,
                     artifact_digest=constraint_table.artifact_digest,
@@ -611,6 +629,9 @@ class GRConfig:
                 table=ConstraintTableSpec(
                     max_top_k=constraint_table.max_top_k if constraint_table is not None else 1,
                     backend=table_backend,
+                    implementation_id=(
+                        constraint_table.implementation_id if constraint_table is not None else None
+                    ),
                     path=table_path,
                     format=(
                         constraint_table.format
@@ -661,6 +682,7 @@ class GRConfig:
                     enabled=True,
                     backend=ConstraintBackendKind.CUDA
                     if backend is ConstraintBackendKind.AUTO
+                    and table_spec.implementation_id is None
                     else backend,
                     candidate_width=self.beam_candidate_width,
                 ),
@@ -863,6 +885,7 @@ def resolve_constraint_backend(config: GRConfig, device_type: str) -> GRConfig:
         constraint is None
         or constraint.table is None
         or constraint.table.backend is not ConstraintBackendKind.AUTO
+        or constraint.table.implementation_id is not None
     ):
         return config
     backend = ConstraintBackendKind(device_type)

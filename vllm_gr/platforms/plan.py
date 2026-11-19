@@ -178,8 +178,11 @@ class BackendPlan:
                 services.update(stage=choices.get("stage"), operator=None)
             if choices.get("requires_attention"):
                 services["attention"] = None
-            if choices.get("constraint") == "legacy":
-                services["constraint"] = None
+            if choices.get("constraint") in ("legacy", "canonical"):
+                # The legacy factory may select the Torch override on the worker.
+                services["constraint"] = (
+                    self.constraint_implementation if choices["constraint"] == "canonical" else None
+                )
         if self.request.uses_beam_v1:
             services.setdefault("stage", None)
             services["operator"] = None
@@ -195,6 +198,18 @@ class BackendPlan:
             return None
         table = self.request.config.to_dict().get("constraint_table") or {}
         return "canonical" if table.get("enabled") else "legacy"
+
+    @property
+    def constraint_implementation(self) -> str | None:
+        if self.requirements is not None:
+            return self.requirements.constraint
+        choices = self.choices.to_dict()
+        if choices.get("constraint") == "canonical" and "constraint_implementation" not in choices:
+            # Plans predating implementation IDs selected canonical tables by their enum.
+            table = self.request.config.to_dict().get("constraint_table") or {}
+            if table.get("enabled") and table.get("implementation_id") is None:
+                return table.get("backend")
+        return choices.get("constraint_implementation")
 
     @property
     def fingerprint(self) -> str:

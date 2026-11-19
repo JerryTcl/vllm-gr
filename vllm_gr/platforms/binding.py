@@ -65,15 +65,18 @@ class BackendBinding:
     runner_adapter: Any
     attention_executor: Any
     constraint_execution: Any
-    canonical_constraint_id: str | None = None
+    canonical_constraint: Any = None  # Borrowed; runner shutdown owns this versioned table.
     attention_surface: Any = None
 
     def report(self) -> dict[str, Any]:
         services = {
             "runner": _implementation_id(self.runner_adapter),
             "attention": _implementation_id(self.attention_executor),
-            "constraint": self.canonical_constraint_id
-            or _implementation_id(self.constraint_execution),
+            "constraint": _implementation_id(
+                self.canonical_constraint
+                if self.canonical_constraint is not None
+                else self.constraint_execution
+            ),
         }
         required = self.plan.required_services
         if "stage" in required:
@@ -90,6 +93,14 @@ def _clear_unplanned_stage(runner: Any, keep: Any = None) -> None:
         runner._gr_unplanned_stage = None
         if unplanned is not keep:
             _close_services([unplanned])
+
+
+def runner_constraint_backend(runner: Any) -> Any:
+    """Read the service bound at model load, including its current artifact version."""
+    binding = getattr(runner, _BINDING_ATTR, None)
+    if binding is None:
+        return getattr(runner, "constraint_backend", None)
+    return binding.canonical_constraint
 
 
 def close_backend_binding(runner: Any) -> None:
@@ -205,13 +216,22 @@ def bind_backend_services(runner: Any) -> BackendBinding | None:
             if constraint is None or not constraint.is_available():
                 raise RuntimeError("Backend constraint execution is unavailable")
         elif plan.constraint_mode == "canonical":
-            # Canonical artifact ownership stays with the existing loader until
-            # #714. Its load/warmup must already have completed successfully.
+            from vllm_gr.config import GRConfig
+
+            from .constraint_plan import canonical_constraint_id
+
             canonical = getattr(runner, "constraint_backend", None)
             if canonical is None:
                 raise RuntimeError("Required canonical constraint backend was not loaded")
+            table = GRConfig.from_vllm_config(config).constraint_table
+            if table is None or _implementation_id(canonical) != canonical_constraint_id(
+                table, plan
+            ):
+                raise RuntimeError(
+                    "Loaded canonical constraint implementation differs from the admitted plan"
+                )
         binding = BackendBinding(
-            plan, adapter, attention, constraint, _implementation_id(canonical), attention_surface
+            plan, adapter, attention, constraint, canonical, attention_surface=attention_surface
         )
         validate_required_services(plan, required, binding.report()["services"], "Backend worker")
         setattr(runner, _BINDING_ATTR, binding)

@@ -172,7 +172,11 @@ def _step_widths(settings: Mapping) -> tuple[tuple[int, ...] | None, tuple[int, 
 
 def _table(value: object, base_dir: str | Path | None) -> ConstraintTableSpec:
     raw = _mapping(value, "gr.constraint_table")
-    _unknown_keys(raw, {"path", "backend", "format", "max_top_k", "digests"}, "gr.constraint_table")
+    _unknown_keys(
+        raw,
+        {"path", "backend", "implementation_id", "format", "max_top_k", "digests"},
+        "gr.constraint_table",
+    )
     digests = _mapping(raw.get("digests", {}), "gr.constraint_table.digests")
     _unknown_keys(digests, {"artifact", "tokenizer"}, "gr.constraint_table.digests")
     path = raw.get("path")
@@ -188,7 +192,9 @@ def _table(value: object, base_dir: str | Path | None) -> ConstraintTableSpec:
     missing = [key for key in ("artifact", "tokenizer") if digests.get(key) is None]
     if missing:
         raise ValueError(f"gr.constraint_table.digests requires {missing}")
-    kwargs = {k: raw[k] for k in ("backend", "format", "max_top_k") if k in raw}
+    kwargs = {
+        k: raw[k] for k in ("backend", "implementation_id", "format", "max_top_k") if k in raw
+    }
     return ConstraintTableSpec(
         path=path,
         artifact_digest=digests.get("artifact"),
@@ -297,6 +303,11 @@ def gr_config_to_mapping(config: GRConfig) -> dict[str, object]:
         else {
             "path": table.path,
             "backend": table.backend.value,
+            **(
+                {"implementation_id": table.implementation_id}
+                if table.implementation_id is not None
+                else {}
+            ),
             "format": table.format,
             "max_top_k": table.max_top_k,
             "digests": {"artifact": table.artifact_digest, "tokenizer": table.tokenizer_digest},

@@ -125,6 +125,7 @@ def _resolve_constraint_backend(config: GRConfig) -> GRConfig:
         config.constraint is None
         or config.constraint.table is None
         or config.constraint.table.backend is not ConstraintBackendKind.AUTO
+        or config.constraint.table.implementation_id is not None
     ):
         return config
     from vllm.platforms import current_platform

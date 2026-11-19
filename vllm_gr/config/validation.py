@@ -118,6 +118,7 @@ def validate_constraint_config(value: object) -> ConstraintConfig | None:
         table=ConstraintTableSpec(
             path=path,
             backend=validate_constraint_backend_kind(table.backend),
+            implementation_id=table.implementation_id,
             max_top_k=(
                 None
                 if table.max_top_k is None
@@ -158,6 +159,21 @@ def validate_constraint_table_backend(
         raise ValueError(
             f"unsupported vllm-gr constraint_table.backend {value!r}; supported: {supported}"
         ) from exc
+
+
+def validate_constraint_implementation_id(value: object) -> str | None:
+    """Accept any non-empty ID; the registry decides whether it is servable.
+
+    Validation must not carry a list of known implementations, or an external
+    registration could never be reached.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("vllm-gr constraint_table.implementation_id must be a string or null")
+    if not value.strip():
+        raise ValueError("vllm-gr constraint_table.implementation_id must not be empty")
+    return value.strip().lower()
 
 
 def validate_constraint_table_path(value: object) -> str | None:

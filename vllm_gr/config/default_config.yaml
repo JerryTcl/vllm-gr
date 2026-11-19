@@ -41,6 +41,7 @@ gr:
   # Remote model IDs require --revision; custom model code requires --trust-remote-code.
   # To enable, set constraint_mode: table and replace constraint_table: null with this mapping.
   # constraint_table:                       # Deployment-specific artifact metadata.
+  # An optional implementation_id in the table selects a registered provider implementation.
   #   path: /absolute/path/to/video_constraint_table.safetensors  # The actual --output path.
   #   backend: auto                         # auto, cpu, cuda, or npu.
   #   format: constraint_table_v1           # constraint_table_v1: single table; constraint_table_v2: multiple tries.

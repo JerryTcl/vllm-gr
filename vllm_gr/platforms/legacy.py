@@ -55,6 +55,16 @@ def legacy_config_service(device_type: str | None) -> BackendConfigService:
     return BackendConfigService() if device_type is None else _UnsupportedPlacement()
 
 
+def validate_legacy_constraint_placement(config: Any, implementation_id: str) -> None:
+    """Validate the enum-only table used by direct, pre-plan frontend callers."""
+    device = getattr(getattr(config, "device_config", None), "device", "cuda")
+    device_type = str(device).split(":")[0]
+    if implementation_id != device_type:
+        raise ValueError(
+            f"beam_search_v1 requires an enabled canonical {device_type.upper()} constraint table"
+        )
+
+
 def declared_api_version(provider: Any) -> int:
     """Read a provider's declared API version, defaulting an absent one to v1.
 

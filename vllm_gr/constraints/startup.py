@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from vllm_gr.platforms.services import constraint_execution_override, planning_provider
+from vllm_gr.config import GRConfig
+from vllm_gr.platforms.plan import BackendPlan
+from vllm_gr.platforms.services import constraint_execution_override
 
 
 def _backend_label(provider: Any) -> str:
@@ -36,6 +38,8 @@ def create_constraint_execution(
     if plan is None:
         adapter = provider.create_constrained_topk_execution(device=device)
     else:
+        from vllm_gr.platforms.services import planning_provider
+
         adapter = planning_provider(provider).create_constrained_topk_execution(
             plan=plan, device=device
         )
@@ -51,3 +55,39 @@ def create_constraint_execution(
             "operator is unavailable (is_available()=False)."
         )
     return adapter
+
+
+def validate_constraint_table_platform(
+    gr_config: GRConfig,
+    *,
+    device_type: str | None = None,
+    plan: BackendPlan | None = None,
+) -> None:
+    """Reject configurations Constraint Tables cannot support in this release.
+
+    The selected implementation declares whether it handles full-vocabulary
+    token IDs against a sliced logits window.
+    """
+    slicing_enabled = gr_config.vocab_offset is not None or gr_config.vocab_slice_size is not None
+    if not slicing_enabled:
+        return
+    from vllm_gr.constraints.registry import (
+        implementation_by_id,
+        resolve_constraint_implementation,
+    )
+
+    table = gr_config.constraint_table
+    implementation_id = (plan.constraint_implementation if plan else None) or device_type
+    if table is not None and table.enabled:
+        implementation = resolve_constraint_implementation(table, plan)
+    elif implementation_id:
+        implementation = implementation_by_id(implementation_id)
+    else:
+        implementation = None
+    if implementation is None or not implementation.supports_vocab_slicing:
+        raise ValueError(
+            "constraint_backend='constraint_table' cannot be combined with "
+            f"vocab slicing (vocab_offset={gr_config.vocab_offset!r}, "
+            f"vocab_slice_size={gr_config.vocab_slice_size!r}) on platform "
+            f"{device_type or implementation_id or 'unknown'!r}"
+        )

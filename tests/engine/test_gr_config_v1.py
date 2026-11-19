@@ -18,6 +18,7 @@ import pytest
 
 from tests.helpers.gr_config import engine_args_from_file
 from tests.helpers.paths import TESTS_DIR
+from tests.helpers.platforms import config_provider
 from vllm_gr.config import (
     CONSTRAINT_TABLE_FORMAT,
     ConstraintTableBackendEnum,
@@ -30,6 +31,7 @@ from vllm_gr.config import (
 )
 from vllm_gr.config.parser import GR_CONFIG_KEY, parse_gr_config
 from vllm_gr.platforms.legacy import legacy_config_service
+from vllm_gr.platforms.plan import read_backend_plan
 
 CATALOG_PATH_KEY = "vllm_gr_catalog_path"
 
@@ -594,12 +596,12 @@ def test_benchmark_server_command_uses_canonical_attention_backend(
         ),
     )
     monkeypatch.setattr(arg_utils_gr, "origin_create_engine_config", lambda *a: config)
-    monkeypatch.setattr(
-        arg_utils_gr, "engine_config_service", lambda: legacy_config_service(device)
-    )
+    with config_provider(device) as provider:
+        result = arg_utils_gr.create_engine_config(engine_args)
 
-    result = arg_utils_gr.create_engine_config(engine_args)
-
+    plan = read_backend_plan(result)
+    assert plan is not None and plan.backend_id == provider.backend_id
+    assert plan.constraint_implementation == device
     assert result.attention_config.backend is AttentionBackendEnum.CUSTOM
     # Suffix fusion must leave hardware-dependent prefix selection automatic.
     assert result.attention_config.flash_attn_version is None

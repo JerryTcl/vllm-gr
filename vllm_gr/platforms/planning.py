@@ -144,6 +144,7 @@ def normalize_backend_request(
 
 
 def resolve_backend_plan(provider: Any, request: BackendRequest) -> BackendPlan:
+    from .constraint_plan import admitted_constraint_id
     from .services import planning_provider
 
     plan = planning_provider(provider).resolve(request)
@@ -155,6 +156,8 @@ def resolve_backend_plan(provider: Any, request: BackendRequest) -> BackendPlan:
         request,
     ):
         raise ValueError("Backend resolve() changed request or provider identity")
+    if (request.config.to_dict().get("constraint_table") or {}).get("enabled"):
+        admitted_constraint_id(plan)
     return plan
 
 

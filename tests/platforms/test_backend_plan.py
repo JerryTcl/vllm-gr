@@ -7,14 +7,15 @@ from __future__ import annotations
 import json
 import pickle
 from dataclasses import FrozenInstanceError, replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
 
-from vllm_gr.config import GRConfig
-from vllm_gr.config.parser import parse_gr_config
+from vllm_gr.config import ConstraintTableBackendEnum, ConstraintTableSpec, GRConfig
+from vllm_gr.config.parser import parse_gr_config, write_canonical_gr_config
 from vllm_gr.platforms import loader
 from vllm_gr.platforms.ascend import NPU_BACKEND
 from vllm_gr.platforms.binding import (
@@ -267,7 +268,7 @@ def test_unmet_pinned_requirement_rolls_back_binding(
 
 
 def test_canonical_table_reports_its_identity_and_keeps_its_native_owner(
-    provider: Provider, monkeypatch: pytest.MonkeyPatch
+    provider: Provider, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
         provider,
@@ -279,12 +280,26 @@ def test_canonical_table_reports_its_identity_and_keeps_its_native_owner(
             PlanData({"constraint": "canonical"}),
         ),
     )
-    native = config()
+    native = SimpleNamespace(additional_config={})
+    table_config = ConstraintTableSpec(
+        enabled=True,
+        backend=ConstraintTableBackendEnum.CPU,
+        path=str(tmp_path / "table.safetensors"),
+        artifact_digest="sha256:" + "a" * 64,
+        tokenizer_digest="sha256:" + "b" * 64,
+        max_top_k=16,
+    )
+    write_canonical_gr_config(native, GRConfig(beam_max_width=16, constraint_table=table_config))
     plan = admit_backend_plan(native)
+    assert BackendPlan.from_wire(plan.to_wire()).required_services["constraint"] == "cpu"
     table = Service(plan, native)
+    table.implementation_id = "cpu"
     runner = SimpleNamespace(vllm_config=native, constraint_backend=table)
     report = worker_backend_readiness(SimpleNamespace(model_runner=runner))
     assert report["services"]["constraint"] == table.implementation_id
+    report["services"]["constraint"] = "another-provider"
+    with pytest.raises(RuntimeError, match="canonical constraint implementation mismatch"):
+        validate_worker_readiness(plan, [report], expected_workers=1)
     close_backend_binding(runner)
     assert not table.closed and runner.constraint_backend is table
 
