@@ -302,7 +302,6 @@ Before the worker creates its runner, the hook checks that choice against the
 admitted plan, installs the selected class's wrappers, and verifies them.
 Workers in one process can use different generations.
 
-
 ```python
 class ModelRunnerPatchHooks(Protocol):
     def discover_worker_runners(
