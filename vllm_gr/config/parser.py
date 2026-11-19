@@ -119,7 +119,7 @@ def _read_settings(path: Path, parents: tuple[Path, ...]) -> dict:
 
 
 GR_CONFIG_KEY: Final = "vllm_gr"
-_BACKEND_TRANSPORT_KEYS: Final = frozenset({"vllm_gr_backend_plan", "vllm_gr_backend_options"})
+BACKEND_TRANSPORT_KEYS: Final = frozenset({"vllm_gr_backend_plan", "vllm_gr_backend_options"})
 GRConfigInput: TypeAlias = str | Path
 CONFIG_ATTRIBUTES = {
     spec.canonical_path[1]: item.name
@@ -374,9 +374,7 @@ def _retired_gr_keys(additional: Mapping) -> list[str]:
     return [
         key
         for key in additional
-        if isinstance(key, str)
-        and key.startswith("vllm_gr_")
-        and key not in _BACKEND_TRANSPORT_KEYS
+        if isinstance(key, str) and key.startswith("vllm_gr_") and key not in BACKEND_TRANSPORT_KEYS
     ]
 
 
