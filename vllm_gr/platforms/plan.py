@@ -174,10 +174,15 @@ class BackendPlan:
             services.update(self.requirements.to_dict())
         else:
             choices = self.choices.to_dict()
+            if choices.get("operator_policy") or self.request.uses_beam_v1:
+                services.update(stage=choices.get("stage"), operator=None)
             if choices.get("requires_attention"):
                 services["attention"] = None
             if choices.get("constraint") == "legacy":
                 services["constraint"] = None
+        if self.request.uses_beam_v1:
+            services.setdefault("stage", None)
+            services["operator"] = None
         if self.request.uses_custom_attention:
             services.setdefault("attention", None)
         return services

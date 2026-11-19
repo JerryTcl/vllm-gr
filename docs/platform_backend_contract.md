@@ -131,8 +131,8 @@ constraint=...)` to a `BackendPlan`. Each supplied value pins the implementation
 ID in the wire plan. Binding checks each required ID before publishing any
 services. The engine checks the same IDs on every worker. A requirement for
 a service the worker cannot bind prevents startup. The attention and constraint
-compatibility factories are available in this slice. The stage and graph
-bindings follow in #712 and #715. Original schema-1 plans omit the optional
+compatibility factories and runner-owned stage binding are available. Graph
+binding follows in #715. Original schema-1 plans omit the optional
 `requirements` field and retain their fingerprints.
 
 The built-in plan records CUDA V1/V2 or Ascend V1, Prefill/Decode policy,
@@ -447,3 +447,38 @@ inject an external `ascend` entry point and rerun the same contract tests:
    modules.
 6. An NPU process without the external package fails with an explicit
    unsupported-backend error and never falls back to CUDA.
+
+### Stage execution and Beam operators
+
+A provider can pin a `RunnerStage` with `ServiceRequirements(stage=...)`. It
+implements execution and retirement. Beam V1 additionally requires a
+`StageExecution` with a worker decision policy, startup capture and decision
+operators. Original schema-1 plans can declare `stage` and `operator_policy`
+in their choices. The per-runner adapter owns the physical stage service.
+The worker validates this service at bind time and
+reports both the stage identity and the chosen operator implementation. Every
+worker serving the same engine must agree on those identities.
+
+The service receives the worker's copy of the scheduled frame for execution and
+retirement. The native stage owner still owns its leases, cancellation state,
+sampling receipts and retirement acknowledgments. A failed execute retains the
+original exception for its associated sample. A service with extra resources
+can implement `close()` to release them when its runner adapter closes.
+
+For a Beam retirement frame the worker returns a native `ModelRunnerOutput`
+or an asynchronous output whose `get_output()` yields it. After releasing the
+physical resources, set `gr_retire_result` on that output to a `GRRetireResult`
+with the frame's session ID, owner generation, retire ID and `released=True`.
+The scheduler waits for outstanding dispatches to drain, checks the receipt
+and publishes the buffered terminal result once.
+
+The service supplies the group and final selection operators, their supported
+geometry, KV reorder and optional fallback. Shared decision code owns score
+accumulation, global token IDs, parent offsets and sequence history. CUDA binds
+the operators for its V1 or V2 runner. Ascend reports the available xllm
+kernels or its reference implementation. Fixed-width Ascend
+multi-step Decode uses the native decision operators. EngineCore checks their
+agreed availability when it admits a request's width schedule, before reserving
+session or KV state. Prefill-only requests and requests handled by the dynamic
+decision path can run without these operators. Configurations without
+an admitted plan retain a runner-local service from the installed native class.

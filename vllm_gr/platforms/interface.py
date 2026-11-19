@@ -9,8 +9,10 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     import torch
+    from vllm.v1.outputs import AsyncModelRunnerOutput, ModelRunnerOutput
 
     from vllm_gr.constraints.execution import ConstrainedTopKExecution
+    from vllm_gr.v1.beam.decision_ops import DecisionOps
 
     from .config import BackendConfigService
     from .identity import PlatformIdentity
@@ -55,6 +57,29 @@ class ModelRunnerInstaller(Protocol):
     def install(self) -> None: ...
 
     def is_patched(self, runner_class: type[Any]) -> bool: ...
+
+
+class RunnerStage(Protocol):
+    """A runner-owned physical stage service; native sessions retain lease authority."""
+
+    implementation_id: str
+
+    def execute(
+        self, worker: Any, scheduled: Any, original: Callable[..., Any], *args: Any, **kwargs: Any
+    ) -> Any: ...
+
+    def retire(self, worker: Any, scheduled: Any) -> ModelRunnerOutput | AsyncModelRunnerOutput:
+        """Beam retirement returns the matching release receipt on the materialized output."""
+        ...
+
+
+class StageExecution(RunnerStage, Protocol):
+    """Additional stage services required for Beam decisions and startup."""
+
+    decision: DecisionOps
+    worker_decision: bool
+
+    def capture_startup_graph(self, worker: Any, *, allow_eager_fallback: bool) -> bool: ...
 
 
 class ModelRunnerAdapter(Protocol):

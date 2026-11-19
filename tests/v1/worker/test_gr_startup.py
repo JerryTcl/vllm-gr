@@ -3,7 +3,6 @@
 """Startup graph publication is conditional on capture, release and GPU health."""
 
 from collections.abc import Callable
-from functools import partial
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
@@ -12,6 +11,7 @@ import pytest
 import torch
 
 from vllm_gr.config.models import DEFAULT_DEPLOYMENT, DeploymentOptions
+from vllm_gr.platforms.cuda.stage import create_v1_stage, create_v2_stage
 from vllm_gr.v1.worker import gr_startup as startup
 from vllm_gr.v1.worker.cuda import gpu_beam_stage_runner as stages
 from vllm_gr.v1.worker.cuda.beam_decode_graph import BeamDecodeCaptureUnsupported
@@ -42,6 +42,51 @@ def _capture_error(worker: SimpleNamespace) -> str | None:
     )
 
 
+@pytest.mark.l1  # type: ignore[misc]
+def test_core_and_worker_admission_use_the_same_configured_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.platforms.test_backend_plan import Provider, config
+    from vllm_gr.config import ConstraintConfig, ConstraintMode, GRConfig
+    from vllm_gr.platforms import loader
+    from vllm_gr.platforms.config import BackendConfigService
+    from vllm_gr.platforms.planning import admit_backend_plan
+    from vllm_gr.v1.engine.beam_search_v1 import validate_gr_device_config
+
+    validate = Mock()
+
+    class Policy(BackendConfigService):
+        def validate_device(self, config: Any, gr: GRConfig, request: Any) -> None:
+            validate(config, gr, request)
+
+    provider = Provider()
+    monkeypatch.setattr(provider, "create_config_service", Policy, raising=False)
+    monkeypatch.setattr(loader, "activate_current_backend", lambda: provider)
+    native = config()
+    native.device_config = SimpleNamespace(device="npu:0")
+    native.scheduler_config = SimpleNamespace(async_scheduling=True)
+    cfg = GRConfig(
+        constraint=ConstraintConfig(mode=ConstraintMode.NONE),
+        beam_max_width=2,
+        beam_worker_decision=True,
+    )
+    cfg.write_to_vllm_config(native)
+    assert admit_backend_plan(native) is not None
+    validate_gr_device_config(native)
+    worker = SimpleNamespace(
+        vllm_config=native,
+        model_config=SimpleNamespace(enforce_eager=True),
+        _gr_backend_binding=SimpleNamespace(runner_adapter=SimpleNamespace(stage=object())),
+    )
+    assert startup._capture_enabled(worker) is False
+    assert [call.args for call in validate.call_args_list] == [(native, cfg, None)] * 2
+    monkeypatch.setattr(
+        loader, "activate_current_backend", lambda: SimpleNamespace(backend_id="other")
+    )
+    with pytest.raises(ValueError, match="differs from the active provider"):
+        validate_gr_device_config(native)
+
+
 CaptureRuntime = tuple[SimpleNamespace, SimpleNamespace, SimpleNamespace, Mock, Mock]
 
 
@@ -64,6 +109,7 @@ def capture_runtime(monkeypatch: pytest.MonkeyPatch) -> CaptureRuntime:
         _gr_async_decode_graph_capture_failed=False,
         _gr_async_decode_graph_capture_error=None,
     )
+    worker._gr_unplanned_stage = create_v1_stage(plan=None, runner=worker)
     graph = SimpleNamespace(ready=True, clear=Mock())
     owner = SimpleNamespace(
         graph=None,
@@ -131,9 +177,13 @@ def test_legacy_v1_enabled_table_still_enables_startup_capture(
 
 
 @pytest.mark.l1  # type: ignore[misc]
-def test_cuda_startup_requires_explicit_hooks(capture_runtime: CaptureRuntime) -> None:
-    with pytest.raises(ValueError, match="requires explicit stage hooks"):
-        startup.capture_async_forward(capture_runtime[0])
+def test_startup_requires_a_bound_stage_or_installed_factory(
+    capture_runtime: CaptureRuntime,
+) -> None:
+    worker = capture_runtime[0]
+    del worker._gr_unplanned_stage
+    with pytest.raises(RuntimeError, match="no installed GR stage execution service"):
+        startup.capture_async_forward(worker)
     cast(Mock, stages.get_stage_runner).assert_not_called()
 
 
@@ -144,7 +194,9 @@ def test_success_publishes_only_after_release_and_sync(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     worker, owner, graph, stream, health = capture_runtime
-    assert startup.capture_async_forward(worker, hooks_type=hooks_type)
+    factory = create_v2_stage if hooks_type is CudaStageHooksV2 else create_v1_stage
+    worker._gr_unplanned_stage = factory(plan=None, runner=worker)
+    assert startup.capture_async_forward(worker)
     assert cast(Mock, stages.get_stage_runner).call_args.kwargs == {
         "hooks_type": hooks_type,
         "for_startup_capture": True,
@@ -173,7 +225,7 @@ def test_opt_in_startup_capture_uses_requested_rows(
     )
     worker, owner, _graph, _stream, _health = capture_runtime
     worker.vllm_config.scheduler_config.max_num_seqs = batch_size
-    assert startup.capture_async_forward(worker, hooks_type=CudaStageHooksV1)
+    assert startup.capture_async_forward(worker)
     scheduled = cast(Mock, stages.get_stage_runner).call_args.args[1]
     prefill = scheduled.gr_stage_metadata["__async_scheduling_startup_capture__"]
     decode = owner.prepare_cpu.call_args.args[0]
@@ -192,11 +244,7 @@ def test_cuda_startup_skips_batches_above_capacity(
 ) -> None:
     worker, owner, *_ = capture_runtime
     worker._vllm_gr_config.deployment = DeploymentOptions(beam_batch_sizes=(4,))
-    capture = (
-        capture_multibatch_forward
-        if v2
-        else partial(startup.capture_async_forward, hooks_type=CudaStageHooksV1)
-    )
+    capture = capture_multibatch_forward if v2 else startup.capture_async_forward
     assert not capture(worker)
     owner.capture_forward.assert_not_called()
 
@@ -213,11 +261,7 @@ def test_prefix_calibration_precedes_decode_capture(
     monkeypatch.setattr(calibrate, "ensure_prefix_calibration", initialize)
     monkeypatch.setattr(startup, "_capture_batch", capture)
     worker = capture_runtime[0]
-    entry = (
-        capture_multibatch_forward
-        if v2
-        else partial(startup.capture_async_forward, hooks_type=CudaStageHooksV1)
-    )
+    entry = capture_multibatch_forward if v2 else startup.capture_async_forward
 
     assert entry(worker)
     initialize.assert_called_once_with(worker)
@@ -238,11 +282,7 @@ def test_default_capture_batch_list() -> None:
 def test_single_step_skips_decode_capture(capture_runtime: CaptureRuntime, v2: bool) -> None:
     worker, owner, _graph, _stream, _health = capture_runtime
     worker._vllm_gr_config.beam_max_decode_steps = 1
-    entry = (
-        capture_multibatch_forward
-        if v2
-        else partial(startup.capture_async_forward, hooks_type=CudaStageHooksV1)
-    )
+    entry = capture_multibatch_forward if v2 else startup.capture_async_forward
 
     assert not entry(worker)
     assert not entry(worker)
@@ -337,7 +377,7 @@ def test_v1_does_not_opt_into_optional_fallback(capture_runtime: CaptureRuntime)
     worker, owner, _graph, _stream, _health = capture_runtime
     owner.capture_forward.side_effect = BeamDecodeCaptureUnsupported("capture unsupported")
     with pytest.raises(BeamDecodeCaptureUnsupported):
-        startup.capture_async_forward(worker, hooks_type=CudaStageHooksV1)
+        startup.capture_async_forward(worker)
     assert not _capture_failed(worker)
 
 
@@ -368,7 +408,7 @@ def test_repeated_startup_accepts_only_completed_capture(
     owner.closed = ready
     capture: Callable[[SimpleNamespace], bool] = _capture
     if not use_v2:
-        capture = partial(startup.capture_async_forward, hooks_type=CudaStageHooksV1)
+        capture = startup.capture_async_forward
     if ready:
         assert capture(worker)
     else:
@@ -397,7 +437,7 @@ def test_repeated_startup_rejects_different_hooks_without_recapture(
     owner.closed = True
     capture: Callable[[SimpleNamespace], bool] = _capture
     if not use_v2:
-        capture = partial(startup.capture_async_forward, hooks_type=CudaStageHooksV1)
+        capture = startup.capture_async_forward
     with pytest.raises(ValueError, match="hooks cannot change"):
         capture(worker)
     assert owner.hooks is hooks
@@ -447,11 +487,7 @@ def test_startup_batch_plan_is_shared_by_both_runners(
     worker.vllm_config.scheduler_config.max_num_seqs = 4
     capture = Mock(return_value=None)
     monkeypatch.setattr(startup, "_capture_batch", capture)
-    entry = (
-        capture_multibatch_forward
-        if v2
-        else partial(startup.capture_async_forward, hooks_type=CudaStageHooksV1)
-    )
+    entry = capture_multibatch_forward if v2 else startup.capture_async_forward
     assert entry(worker)
     assert [call.args[1] for call in capture.call_args_list] == [2, 4]
     assert (

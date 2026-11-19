@@ -67,21 +67,34 @@ class BackendBinding:
     canonical_constraint_id: str | None = None
 
     def report(self) -> dict[str, Any]:
-        return {
-            "ready": True,
-            "fingerprint": self.plan.fingerprint,
-            "services": {
-                "runner": _implementation_id(self.runner_adapter),
-                "attention": _implementation_id(self.attention_executor),
-                "constraint": self.canonical_constraint_id
-                or _implementation_id(self.constraint_execution),
-            },
+        services = {
+            "runner": _implementation_id(self.runner_adapter),
+            "attention": _implementation_id(self.attention_executor),
+            "constraint": self.canonical_constraint_id
+            or _implementation_id(self.constraint_execution),
         }
+        required = self.plan.required_services
+        if "stage" in required:
+            stage = self.runner_adapter.stage
+            services["stage"] = stage.implementation_id
+            if "operator" in required:
+                services["operator"] = stage.decision.implementation_id
+        return {"ready": True, "fingerprint": self.plan.fingerprint, "services": services}
+
+
+def _clear_unplanned_stage(runner: Any, keep: Any = None) -> None:
+    unplanned = getattr(runner, "_gr_unplanned_stage", None)
+    if unplanned is not None:
+        runner._gr_unplanned_stage = None
+        if unplanned is not keep:
+            _close_services([unplanned])
 
 
 def close_backend_binding(runner: Any) -> None:
     binding = getattr(runner, _BINDING_ATTR, None)
     setattr(runner, _BINDING_ATTR, None)
+    adapter = binding.runner_adapter if binding is not None else None
+    _clear_unplanned_stage(runner, getattr(adapter, "stage", None))
     if binding is not None:
         if getattr(runner, "_gr_constraint_execution", None) is binding.constraint_execution:
             runner._gr_constraint_execution = None
@@ -127,6 +140,30 @@ def bind_backend_services(runner: Any) -> BackendBinding | None:
         for phase in getattr(type(runner), "_gr_runner_methods", ()):
             if not callable(getattr(adapter, phase, None)):
                 raise RuntimeError(f"Backend runner adapter does not implement {phase}()")
+        if "stage" in required:
+            stage = getattr(adapter, "stage", None)
+            stage_id = getattr(stage, "implementation_id", None)
+            if not isinstance(stage_id, str) or not stage_id.strip():
+                label = "Beam stage" if "operator" in required else "stage"
+                raise RuntimeError(f"Backend did not bind the required {label} execution service")
+            methods = ["execute", "retire"]
+            if "operator" in required:
+                if not isinstance(getattr(stage, "worker_decision", None), bool):
+                    raise RuntimeError("Backend stage must declare its worker_decision policy")
+                methods.append("capture_startup_graph")
+            for method in methods:
+                if not callable(getattr(stage, method, None)):
+                    raise RuntimeError(f"Backend stage does not implement {method}()")
+        if "operator" in required:
+            operators = getattr(adapter.stage, "decision", None)
+            operator_id = getattr(operators, "implementation_id", None)
+            if (
+                not isinstance(operator_id, str)
+                or not operator_id.strip()
+                or not callable(getattr(operators, "select", None))
+                or not callable(getattr(operators, "reorder", None))
+            ):
+                raise RuntimeError("Worker did not bind a Beam decision operator")
         attention = None
         if "attention" in required:
             attention = selected.create_attention_executor(plan=plan, device=device)
@@ -162,6 +199,7 @@ def bind_backend_services(runner: Any) -> BackendBinding | None:
         )
         validate_required_services(plan, required, binding.report()["services"], "Backend worker")
         setattr(runner, _BINDING_ATTR, binding)
+        _clear_unplanned_stage(runner, getattr(adapter, "stage", None))
         return binding
     except BaseException:
         preloaded = getattr(runner, "_gr_constraint_execution", None)

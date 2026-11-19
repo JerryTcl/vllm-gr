@@ -15,7 +15,7 @@ from tests.kernels.beam_stage_test_utils import (
     install_decode_model,
 )
 from vllm_gr.config.models import DeploymentOptions
-from vllm_gr.v1.worker.cuda.v1.gpu_beam_stage_runner_v1 import CudaStageHooksV1
+from vllm_gr.platforms.cuda.stage import create_v1_stage
 from vllm_gr.v1.worker.cuda.v2.gpu_beam_stage_runner_v2 import (
     should_replay_decode_graph_v2,
 )
@@ -129,8 +129,9 @@ def test_v1_startup_graphs_replay_with_their_own_batch_buffers() -> None:
     cfg.deployment = DeploymentOptions(beam_batch_sizes=(1, 2))
     worker.vllm_config.scheduler_config = SimpleNamespace(async_scheduling=True, max_num_seqs=2)
     install_decode_model(worker, lambda ids, pos: (ids + pos)[:, None].to(torch.float16))
-    assert capture_async_forward(worker, hooks_type=CudaStageHooksV1)
-    assert capture_async_forward(worker, hooks_type=CudaStageHooksV1)
+    worker._gr_unplanned_stage = create_v1_stage(plan=None, runner=worker)
+    assert capture_async_forward(worker)
+    assert capture_async_forward(worker)
     for batch, token in ((1, 5), (2, 9), (1, 17)):
         owner = worker._gr_gpu_stage_runner_cache[batch]
         owner.input_ids.fill_(token)

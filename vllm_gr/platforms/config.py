@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from inspect import signature
 from typing import TYPE_CHECKING, Any
 
 from .errors import BackendNotActiveError, UnsupportedBackendError
 from .interface import ConfigProvider
+from .plan import BACKEND_PLAN_KEY
 from .registry import get_active_backend
 
 if TYPE_CHECKING:
@@ -21,6 +23,7 @@ class BackendConfigService:
     default_worker_decision = False
     promote_catalog_tables = False
     supports_constraint_vocab_slicing = False
+    supports_sid_stage_vocab = False
 
     def apply_native_defaults(self, config: Any) -> None:
         pass
@@ -29,6 +32,15 @@ class BackendConfigService:
         pass
 
     def finalize_native_config(self, config: Any, gr: GRConfig) -> None:
+        pass
+
+    def validate_device(self, config: Any, gr: GRConfig, request: Any) -> None:
+        if gr.beam_sid_stage_vocab and not self.supports_sid_stage_vocab:
+            raise ValueError(
+                "beam.sid_stage_vocab requires a provider with stage vocabulary support"
+            )
+
+    def validate_request_budget(self, config: Any, request: Any) -> None:
         pass
 
 
@@ -70,3 +82,28 @@ def engine_config_service() -> BackendConfigService:
                 raise
             return BackendConfigService()
     return provider_config_service(provider)
+
+
+def request_config_service(config: Any) -> BackendConfigService:
+    """Use the provider admitted by EngineArgs for frontend, EngineCore and Worker."""
+    from .loader import activate_current_backend
+
+    additional = getattr(config, "additional_config", None)
+    if isinstance(additional, Mapping) and BACKEND_PLAN_KEY in additional:
+        try:
+            provider = get_active_backend()
+        except BackendNotActiveError:
+            provider = activate_current_backend()
+        envelope = additional[BACKEND_PLAN_KEY]
+        data = envelope.get("plan") if isinstance(envelope, Mapping) else None
+        if not isinstance(data, Mapping) or provider.backend_id != data.get("backend_id"):
+            raise ValueError("Request config backend differs from the active provider")
+        return provider_config_service(provider)
+    # Older callers pass native configs constructed before plan admission.
+    from .legacy import legacy_config_service
+
+    device = getattr(getattr(config, "device_config", None), "device", None)
+    service: BackendConfigService = legacy_config_service(
+        None if device is None else str(device).split(":")[0]
+    )
+    return service

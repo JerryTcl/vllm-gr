@@ -310,13 +310,19 @@ def test_constrained_prefill_keeps_backend_scores_and_prefix_metadata(batch_size
 def test_unconstrained_startup_selects_the_existing_npu_graph_adapter(
     eager: bool, steps: int, expected: bool
 ) -> None:
+    from vllm_gr.config.models import DEFAULT_DEPLOYMENT
+    from vllm_gr.platforms.ascend.stage import create_stage
     from vllm_gr.v1.worker.gr_startup import _capture_enabled
 
     worker = SimpleNamespace(
         device="npu",
         model_config=SimpleNamespace(enforce_eager=eager),
-        vllm_config=SimpleNamespace(scheduler_config=SimpleNamespace(async_scheduling=True)),
+        vllm_config=SimpleNamespace(
+            device_config=SimpleNamespace(device="npu"),
+            scheduler_config=SimpleNamespace(async_scheduling=True),
+        ),
         _vllm_gr_config=SimpleNamespace(
+            deployment=DEFAULT_DEPLOYMENT,
             constraint=ConstraintConfig(mode=ConstraintMode.NONE),
             beam_worker_decision=True,
             beam_max_width=2,
@@ -324,6 +330,7 @@ def test_unconstrained_startup_selects_the_existing_npu_graph_adapter(
             beam_graph_enabled=True,
         ),
     )
+    worker._gr_unplanned_stage = create_stage(plan=None, runner=worker)
     assert _capture_enabled(worker) is expected
 
 

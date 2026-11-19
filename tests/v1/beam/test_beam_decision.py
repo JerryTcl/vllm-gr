@@ -90,15 +90,21 @@ def test_npu_n2_group_receives_two_slot_history(monkeypatch: pytest.MonkeyPatch)
         seen_shape = tuple(args[3].shape)
         raise RuntimeError("captured group input")
 
+    from vllm_gr.platforms.ascend.stage import create_stage
+
+    monkeypatch.setattr(beam_ops, "is_available", lambda: True)
+    monkeypatch.setattr(beam_ops, "decision_ops_available", lambda: True)
     monkeypatch.setattr(beam_ops, "beam_search_group", capture_group)
     candidates = torch.arange(width * width, dtype=torch.int32).reshape(width, width)
     with pytest.raises(RuntimeError, match="captured group input"):
-        beam_decision._run_npu_decision(
+        beam_decision._run_decision(
+            create_stage(plan=None, runner=SimpleNamespace()).decision,
             session,
             candidates,
             torch.zeros_like(candidates, dtype=torch.float32),
-            is_last_step=True,
+            last=True,
             result_width=width,
+            strict=True,
         )
     assert seen_shape == (1, width, 2)
 
@@ -214,3 +220,46 @@ def test_decision_buffers_reset_clears_all_state() -> None:
 
 
 pytestmark = pytest.mark.cpu_test
+
+
+def _reference_runner(**kwargs: Any) -> SimpleNamespace:
+    from vllm_gr.v1.beam.decision_ops import reference_ops
+
+    return SimpleNamespace(
+        _gr_unplanned_stage=SimpleNamespace(decision=reference_ops(), worker_decision=False),
+        **kwargs,
+    )
+
+
+@pytest.mark.l1  # type: ignore[misc]
+def test_canonical_operator_dispatch_preserves_ties_masks_and_member_order() -> None:
+    """One member has tied valid candidates and the second has no valid candidate."""
+    runner = _reference_runner()
+    context = _make_context(max_batch=2, max_beams=2, max_decode_steps=2)
+    context.decision.worker_decode_steps = 1
+    context.decision.beam_scores[:2, :2].copy_(torch.tensor([[-0.5, -1.0], [0.0, 0.0]]))
+    context.decision.sequence[:2, :2, 0].copy_(torch.tensor([[8, 9], [6, 7]]))
+    session = SimpleNamespace(
+        beam_width=2,
+        context=context,
+        sessions=(
+            SimpleNamespace(_state=SimpleNamespace(is_last_step=True)),
+            SimpleNamespace(_state=SimpleNamespace(is_last_step=True)),
+        ),
+    )
+    tokens = torch.tensor([[202, 105], [307, 401], [907, 502], [555, 776]], dtype=torch.int32)
+    scores = torch.tensor(
+        [
+            [-1.0, -float("inf")],
+            [-0.5, -float("inf")],
+            [-float("inf"), -float("inf")],
+            [-float("inf"), -float("inf")],
+        ]
+    )
+    result = beam_decision.run_beam_decision_candidates(
+        runner, session, tokens, scores, is_last_step=True
+    )
+    assert result["out_token_ids"].tolist() == [[202, 307], [907, 502]]
+    assert result["out_token_index"].tolist() == [[0, 1], [2, 2]]
+    assert result["out_log_probs"].tolist() == [[-1.5, -1.5], [-float("inf"), -float("inf")]]
+    assert result["out_sequence"].tolist() == [[[8, 202], [9, 307]], [[6, 907], [6, 502]]]

@@ -9,6 +9,7 @@ import pickle
 from dataclasses import FrozenInstanceError, replace
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -44,6 +45,7 @@ pytestmark = [pytest.mark.cpu_test, pytest.mark.l1]
 
 class Service:
     implementation_id = "test-service-v1"
+    stage: Any
 
     def __init__(self, plan: BackendPlan, owner: Any) -> None:
         self.plan = plan
@@ -87,6 +89,11 @@ class Provider:
 
     def create_model_runner_adapter(self, *, plan: BackendPlan, native_runner: Any) -> Service:
         service = Service(plan, native_runner)
+        service.stage = Mock(
+            implementation_id="test.stage",
+            worker_decision=True,
+            decision=Mock(implementation_id="test.decision"),
+        )
         self.created.append(service)
         return service
 
@@ -164,6 +171,42 @@ def test_service_requirements_extend_existing_wire_plans() -> None:
     for invalid in ({"stage": " "}, {"unknown": "id"}, {"attention": None}):
         with pytest.raises(ValueError):
             ServiceRequirements.from_dict(invalid)
+
+
+def test_explicit_stage_binds_without_beam_operator_policy(
+    provider: Provider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = SimpleNamespace(
+        implementation_id="external.stage",
+        execute=lambda *args: None,
+        retire=lambda *args: None,
+    )
+    monkeypatch.setattr(
+        provider,
+        "resolve",
+        lambda req: BackendPlan(
+            provider.backend_id,
+            provider.api_version,
+            req,
+            PlanData({}),
+            requirements=ServiceRequirements(stage="external.stage"),
+        ),
+    )
+    monkeypatch.setattr(
+        provider, "create_model_runner_adapter", lambda **kwargs: SimpleNamespace(stage=stage)
+    )
+    native = config()
+    GRConfig(beam_worker_decision=False).write_to_vllm_config(native)
+    plan = admit_backend_plan(native)
+    report = bind_backend_services(SimpleNamespace(vllm_config=native)).report()
+    assert report["services"]["stage"] == "external.stage"
+    assert "operator" not in report["services"]
+    validate_worker_readiness(plan, [report], expected_workers=1)
+    stage.implementation_id = report["services"]["stage"] = "other.stage"
+    with pytest.raises(RuntimeError, match="stage implementation mismatch"):
+        bind_backend_services(SimpleNamespace(vllm_config=native))
+    with pytest.raises(RuntimeError, match="stage implementation mismatch"):
+        validate_worker_readiness(plan, [report], expected_workers=1)
 
 
 def test_explicit_service_ids_bind_and_reject_matching_but_wrong_worker_reports(

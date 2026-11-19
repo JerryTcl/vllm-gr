@@ -118,3 +118,6 @@ def verify_engine_backend_readiness(engine: Any) -> None:
             logger.exception("Failed to shut down executor after backend readiness failure")
         raise
     engine._gr_backend_fingerprint = plan.fingerprint
+    # The Core admits request-specific geometry after every worker has reported
+    # the same services. Keep this local to the native Core configuration.
+    engine.vllm_config._gr_ready_services = dict(reports[0]["services"])

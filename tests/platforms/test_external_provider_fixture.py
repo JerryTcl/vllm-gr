@@ -346,7 +346,7 @@ provider = loader.activate_current_backend()
 engines = []
 for tile in (16, 32):
     config = SimpleNamespace(additional_config={"vllm_gr_backend_options": {"tile": tile}})
-    GRConfig(beam_max_width=tile).write_to_vllm_config(config)
+    GRConfig(beam_worker_decision=False).write_to_vllm_config(config)
     plan = admit_backend_plan(config)
     assert plan == BackendPlan.from_wire(json.loads(json.dumps(plan.to_wire())))
     assert ["vllm-gr-host-planned", "1.0.0"] in plan.request.compatibility.to_dict()["provider_distributions"]
@@ -414,8 +414,11 @@ class RunnerProvider(HostOnlyProvider):
 
     def create_model_runner_adapter(self, *, plan, native_runner):
         width = plan.request.config.to_dict()["beam_max_width"]
+        from unittest.mock import Mock
+        stage = Mock(implementation_id="host.stage", worker_decision=True,
+                     decision=Mock(implementation_id="host.decision"))
         return SimpleNamespace(implementation_id="host.runner", prepare_inputs=lambda v: v,
-                               execute_model=lambda v: (width, v))
+                               execute_model=lambda v: (width, v), stage=stage)
 
     def create_attention_executor(self, *, plan, device):
         raise AssertionError("not requested")

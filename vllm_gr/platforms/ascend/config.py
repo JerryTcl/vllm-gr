@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 
 class AscendConfigService(BackendConfigService):
+    supports_sid_stage_vocab = True
     default_worker_decision = True
     promote_catalog_tables = True
 
@@ -44,3 +45,13 @@ class AscendConfigService(BackendConfigService):
         from vllm_gr.v1.ascend_compat import apply_engine_core_config_sanitizer
 
         apply_engine_core_config_sanitizer(EngineCoreProc)
+
+    def validate_device(self, config: Any, gr: GRConfig, request: Any) -> None:
+        from vllm_gr.v1.engine.npu_admission import validate_npu_device_config
+
+        validate_npu_device_config(config, gr, request)
+
+    def validate_request_budget(self, config: Any, request: Any) -> None:
+        from vllm_gr.v1.engine.npu_admission import validate_decode_token_budget
+
+        validate_decode_token_budget(request, config)

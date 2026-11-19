@@ -8,6 +8,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
 
+from .config import BackendConfigService
 from .errors import InvalidBackendProviderError
 from .identity import PlatformIdentity
 from .interface import (
@@ -20,9 +21,13 @@ from .interface import (
 if TYPE_CHECKING:
     import torch
 
-    from .config import BackendConfigService
 
 logger = logging.getLogger("vllm_gr.platforms.legacy")
+
+
+class _UnsupportedPlacement(BackendConfigService):
+    def validate_device(self, config: Any, gr: Any, request: Any) -> None:
+        raise ValueError("Asynchronous scheduling requires a provider with a Beam ModelRunner")
 
 
 class _LegacyPlacement(Protocol):
@@ -43,11 +48,11 @@ def _legacy_placement(device_type: str | None) -> _LegacyPlacement | None:
 
 
 def legacy_config_service(device_type: str | None) -> BackendConfigService:
-    """Preserve native configuration defaults for fixed API-v1 placements."""
-    from .config import BackendConfigService
-
+    """Reproduce defaults for direct, unplanned configs and fixed API-v1 identities."""
     placement = _legacy_placement(device_type)
-    return placement.create_config_service() if placement is not None else BackendConfigService()
+    if placement is not None:
+        return placement.create_config_service()
+    return BackendConfigService() if device_type is None else _UnsupportedPlacement()
 
 
 def declared_api_version(provider: Any) -> int:

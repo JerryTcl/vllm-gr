@@ -393,9 +393,7 @@ def test_npu_fallback_installs_v1_and_keeps_capture_protocol_selection(
     monkeypatch.setattr(
         gr_startup,
         "capture_async_forward",
-        lambda _, *, hooks_type: events.append("stages")
-        if hooks_type is None
-        else pytest.fail("NPU received CUDA hooks"),
+        lambda _: events.append("stages"),
     )
     monkeypatch.setattr(model_runner_patch, "freeze_gc_after_graph_capture", lambda _: None)
 
@@ -408,6 +406,9 @@ def test_npu_fallback_installs_v1_and_keeps_capture_protocol_selection(
     monkeypatch.setattr(builtins, "__import__", without_cuda_hooks)
     model_runner_patch.apply_worker_patches()
     assert model_runner_patch.is_worker_runner_patched(Runner)
+    from vllm_gr.platforms.ascend.stage import create_stage
+
+    assert getattr(Runner, "_gr_stage_factory") is create_stage
     assert Runner().capture_model() == 17
     assert events == ["native", "stages" if mode is not None else "legacy"]
 

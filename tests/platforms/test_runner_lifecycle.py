@@ -149,7 +149,7 @@ def test_full_load_rebinds_the_same_plan_only_once_per_model(
     provider.create_model_runner_adapter.side_effect = [old, new]
     monkeypatch.setattr(loader, "activate_current_backend", lambda: provider)
     config = SimpleNamespace(additional_config={})
-    GRConfig(beam_max_width=16).write_to_vllm_config(config)
+    GRConfig(beam_worker_decision=False).write_to_vllm_config(config)
     plan = admit_backend_plan(config)
     assert plan is not None
     runner = SimpleNamespace(vllm_config=config)

@@ -14,6 +14,8 @@ import torch
 from vllm.v1.core.sched.output import NewRequestData
 
 from vllm_gr.constraints.backend import ConstraintMetadata, ConstraintOutput
+from vllm_gr.platforms.ascend.stage import AscendStageExecutionService, create_stage
+from vllm_gr.v1.beam.decision_ops import reference_ops
 from vllm_gr.v1.beam.execution_batch import BeamExecutionContractError
 from vllm_gr.v1.beam.npu_execution_batch import (
     NPUBeamExecutionBatch,
@@ -28,6 +30,10 @@ from vllm_gr.v1.worker.npu.npu_beam_stage_adapter import (
 )
 from vllm_gr.v1.worker.npu.npu_beam_stage_runner import NPUEagerBeamStageRunner
 from vllm_gr.v1.worker.npu.npu_model_runner_inputs import InputBatchProxy
+
+
+class AscendRunner(SimpleNamespace):
+    _gr_stage_factory = staticmethod(create_stage)
 
 
 def _eager_stage_output(
@@ -1432,21 +1438,25 @@ def test_shared_stage_dispatch_routes_devices(monkeypatch: pytest.MonkeyPatch, d
     npu = Mock(return_value=stage)
     monkeypatch.setattr(gpu_beam_stage_runner, "get_stage_runner", cuda)
     monkeypatch.setattr(npu_beam_stage_runner, "get_npu_stage_runner", npu)
-    hooks = object()
-    worker = SimpleNamespace(device=device)
+    from vllm_gr.platforms.ascend.stage import create_stage
+    from vllm_gr.platforms.cuda.stage import create_v1_stage
+    from vllm_gr.v1.worker.cuda.v1.gpu_beam_stage_runner_v1 import CudaStageHooksV1
+
+    worker = SimpleNamespace(device=device, vllm_config=SimpleNamespace(additional_config={}))
+    if device == "cuda":
+        worker._gr_unplanned_stage = create_v1_stage(plan=None, runner=worker)
+    elif device == "npu":
+        worker._gr_unplanned_stage = create_stage(plan=None, runner=worker)
     scheduled = _eager_stage_output(kind="prefill")
     if device == "cpu":
-        with pytest.raises(ValueError, match="no execution adapter"):
-            _gr_dispatch._dispatch_stage_frame(worker, scheduled, object(), hooks_type=hooks)
+        with pytest.raises(RuntimeError, match="no installed GR stage execution service"):
+            _gr_dispatch._dispatch_stage_frame(worker, scheduled, object())
         cuda.assert_not_called()
         npu.assert_not_called()
     else:
-        assert (
-            _gr_dispatch._dispatch_stage_frame(worker, scheduled, object(), hooks_type=hooks)
-            is output
-        )
+        assert _gr_dispatch._dispatch_stage_frame(worker, scheduled, object()) is output
         if device == "cuda":
-            assert cuda.call_args.kwargs["hooks_type"] is hooks
+            assert cuda.call_args.kwargs["hooks_type"] is CudaStageHooksV1
             npu.assert_not_called()
         else:
             npu.assert_called_once()
@@ -1530,7 +1540,7 @@ def test_npu_first_decode_native_contract_keeps_six_forward_tokens(
             decode_step_1based_buf=torch.zeros(1, dtype=torch.int32),
             xllm_block_table_buf=torch.zeros(2, dtype=torch.int32),
         )
-    worker = SimpleNamespace(
+    worker = AscendRunner(
         device="npu",
         input_ids=SimpleNamespace(gpu=torch.zeros(6, dtype=torch.int32)),
         positions=torch.zeros(6, dtype=torch.int64),
@@ -1627,7 +1637,7 @@ def test_npu_failed_execute_reaches_sample_without_native_fallback(
     from vllm_gr.v1.worker.npu import npu_beam_stage_runner
 
     failure = ValueError("injected execute failure")
-    worker = SimpleNamespace(device="npu", execute_model_state=None)
+    worker = AscendRunner(device="npu", execute_model_state=None)
     stage = object.__new__(NPUEagerBeamStageRunner)
     stage.worker, stage.previous = worker, None
     stage.closed, stage.pending_plan, stage.execution_error = False, None, None
@@ -2426,6 +2436,7 @@ def test_npu_parent_history_follows_output_options_through_session(
     worker = SimpleNamespace(
         device=torch.device("cpu"),
         _vllm_gr_config=SimpleNamespace(constrained_generation=True),
+        _gr_unplanned_stage=AscendStageExecutionService("ascend.v1", reference_ops(), False),
         _gr_npu_graph_context=context,
         _gr_npu_beam_graph_shapes={(batch_size, 3)},
         constraint_backend=SimpleNamespace(
