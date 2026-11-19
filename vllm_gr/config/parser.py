@@ -355,9 +355,8 @@ def load_engine_gr_config(
         raise TypeError("config must be a YAML file path")
     if overrides is not None and not isinstance(overrides, Mapping):
         raise ValueError("gr must be a mapping")
-    if isinstance(additional, Mapping) and any(
-        key == GR_CONFIG_KEY or (isinstance(key, str) and key.startswith("vllm_gr_") and key not in _BACKEND_TRANSPORT_KEYS)
-        for key in additional
+    if isinstance(additional, Mapping) and (
+        GR_CONFIG_KEY in additional or _retired_gr_keys(additional)
     ):
         raise ValueError("Supply GR settings with gr=..., --gr-config, or --config")
     if startup_document is not None:
@@ -371,11 +370,21 @@ def load_engine_gr_config(
     return _load_document({"gr": {}}, overrides, worker_decision_default=worker_decision_default)
 
 
+def _retired_gr_keys(additional: Mapping) -> list[str]:
+    return [
+        key
+        for key in additional
+        if isinstance(key, str)
+        and key.startswith("vllm_gr_")
+        and key not in _BACKEND_TRANSPORT_KEYS
+    ]
+
+
 def parse_gr_config(vllm_config: object | None) -> GRConfig:
     additional = getattr(vllm_config, "additional_config", None)
     if not isinstance(additional, Mapping):
         return GRConfig()
-    retired = [key for key in additional if isinstance(key, str) and key.startswith("vllm_gr_") and key not in _BACKEND_TRANSPORT_KEYS]
+    retired = _retired_gr_keys(additional)
     if retired:
         raise ValueError(f"Removed vLLM-GR configuration keys: {sorted(retired)}; use gr")
     if GR_CONFIG_KEY not in additional:
@@ -391,7 +400,7 @@ def write_canonical_gr_config(vllm_config: object, gr_config: GRConfig) -> None:
     additional = getattr(vllm_config, "additional_config", None)
     if not isinstance(additional, MutableMapping):
         raise ValueError("vLLM-GR additional_config must be a mutable mapping")
-    retired = [key for key in additional if isinstance(key, str) and key.startswith("vllm_gr_") and key not in _BACKEND_TRANSPORT_KEYS]
+    retired = _retired_gr_keys(additional)
     known = {spec.legacy_key for _, spec in config_fields(GRConfig)} | {
         "vllm_gr_catalog_path",
         "vllm_gr_constraint_backend",

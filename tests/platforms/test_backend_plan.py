@@ -299,8 +299,7 @@ def test_two_engines_bind_their_own_plan_runner_and_device(provider: Provider) -
 def test_worker_configuration_drift_fails_before_any_factory(provider: Provider) -> None:
     native = config()
     admit_backend_plan(native)
-    native.additional_config["vllm_gr_beam_max_width"] = 32
-    native._vllm_gr_parsed_config = None
+    GRConfig(beam_max_width=32).write_to_vllm_config(native)
     with pytest.raises(RuntimeError, match="plan mismatch"):
         bind_backend_services(SimpleNamespace(vllm_config=native, device="test:0"))
     assert provider.created == []
@@ -508,7 +507,7 @@ def test_unknown_reserved_key_still_fails_and_invalid_plan_is_not_ignored() -> N
     with pytest.raises(ValueError, match="envelope"):
         read_backend_plan(native)
     native.additional_config["vllm_gr_backend_typo"] = 1
-    with pytest.raises(ValueError, match="unknown"):
+    with pytest.raises(ValueError, match="Removed vLLM-GR"):
         parse_gr_config(native)
 
 

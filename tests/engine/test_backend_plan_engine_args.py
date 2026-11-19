@@ -31,17 +31,22 @@ pytestmark = [pytest.mark.cpu_test, pytest.mark.l1]
 def test_engine_args_round_trip_keeps_the_admitted_backend_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    native = SimpleNamespace(additional_config={})
+    native = SimpleNamespace(
+        additional_config={}, scheduler_config=SimpleNamespace(async_scheduling=True)
+    )
     monkeypatch.setattr(arg_utils_gr, "origin_create_engine_config", lambda *args: native)
     monkeypatch.setattr(
         arg_utils_gr, "engine_config_service", lambda: legacy_config_service("cuda")
     )
     monkeypatch.setattr(loader, "activate_current_backend", lambda: CUDA_BACKEND)
-    args = SimpleNamespace(beam_max_width=32, constrained_generation=False)
+    args = SimpleNamespace(
+        gr={"beam_width": [32] * 3, "candidate_width": [32] * 3, "constraint_mode": "none"}
+    )
     first = arg_utils_gr.create_engine_config(args)
     plan = read_backend_plan(first)
     gr = GRConfig.from_vllm_config(first)
     assert plan is not None
+    native.additional_config = {}
     assert arg_utils_gr.create_engine_config(args) is first
     assert read_backend_plan(first) == plan
     assert GRConfig.from_vllm_config(first) == gr
@@ -113,9 +118,12 @@ def test_external_policy_defaults_reach_engine_plan(monkeypatch: pytest.MonkeyPa
         additional_config={},
         device_config=SimpleNamespace(device="cuda:0"),
         cache_config=SimpleNamespace(block_size=8),
+        scheduler_config=SimpleNamespace(async_scheduling=True),
     )
     monkeypatch.setattr(arg_utils_gr, "origin_create_engine_config", lambda *args: native)
-    args = SimpleNamespace(beam_max_width=32, constrained_generation=False)
+    args = SimpleNamespace(
+        gr={"beam_width": [32] * 3, "candidate_width": [32] * 3, "constraint_mode": "none"}
+    )
     plan = read_backend_plan(arg_utils_gr.create_engine_config(args))
     assert events == ["defaults", "validate", "finalize"]
     assert plan is not None and plan.backend_id == provider.backend_id

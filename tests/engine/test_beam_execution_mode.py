@@ -11,6 +11,7 @@ from vllm_gr.config import (
     GRConfig,
 )
 from vllm_gr.v1.engine.beam_search_v1 import validate_gr_execution_config
+from vllm_gr.platforms.legacy import legacy_config_service
 
 
 def test_native_async_does_not_select_v1() -> None:
@@ -124,8 +125,9 @@ def test_v1_reduction_policy_scope_overrides_and_cache_identity(
         compilation_config=compilation,
     )
     monkeypatch.setattr(arg_utils_gr, "origin_create_engine_config", lambda *a: config)
-    monkeypatch.setattr(arg_utils_gr, "_is_cuda_platform", lambda: device_type == "cuda")
-    monkeypatch.setattr(arg_utils_gr, "_is_npu_platform", lambda: device_type == "npu")
+    monkeypatch.setattr(
+        arg_utils_gr, "engine_config_service", lambda: legacy_config_service(device_type)
+    )
     args = SimpleNamespace(
         gr={
             "beam_width": [4] * 3 if with_beam else None,
@@ -154,3 +156,11 @@ def test_v1_reduction_policy_scope_overrides_and_cache_identity(
 
 
 pytestmark = [pytest.mark.cpu_test, pytest.mark.l1]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_backend_plan_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise configuration policy independently of a native backend install."""
+    from vllm_gr.platforms import planning
+
+    monkeypatch.setattr(planning, "admit_backend_plan", lambda config: None)
