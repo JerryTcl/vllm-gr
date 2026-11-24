@@ -13,8 +13,8 @@
 
 ## Latest News
 
-- [2026/11] The [vLLM-GR v0.30.0 release branch](https://github.com/vllm-project/vllm-gr/tree/release/v0.30.0)
-  is available. vLLM-GR extends vLLM to serve generative recommendation models.
+- [2026/11] vLLM community officially released [vllm-project/vllm-gr](https://github.com/vllm-project/vllm-gr)
+  in order to support generative recommendation model serving.
 
 ## About
 
