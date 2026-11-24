@@ -6,6 +6,16 @@
 
 <h3 align="center">vLLM-GR brings generative recommendation models to vLLM.</h3>
 
+<p align="center">
+  <a href="https://slack.vllm.ai"><b>Developer Slack</b></a> |
+  <a href="docs/assets/wechat.jpg"><b>WeChat</b></a>
+</p>
+
+## Latest News
+
+- [2026/11] The [vLLM-GR v0.30.0 release branch](https://github.com/vllm-project/vllm-gr/tree/release/v0.30.0)
+  is available. vLLM-GR extends vLLM to serve generative recommendation models.
+
 ## About
 
 [vLLM](https://github.com/vllm-project/vllm) was originally built to serve
@@ -71,6 +81,12 @@ extension of vLLM.
 
 We welcome and value any contributions and collaborations.
 Please check out [Contributing to vLLM-GR](./CONTRIBUTING.md) for how to get involved.
+
+## Join the Community
+
+Ask questions and share feedback in `#sig-gr` on [vLLM Developer Slack](https://slack.vllm.ai),
+or scan the [vLLM-GR WeChat group QR code](docs/assets/wechat.jpg) in WeChat.
+If the QR code has expired, ask for a fresh one in `#sig-gr`.
 
 ## Security
 
