@@ -142,11 +142,15 @@ def parse_args(
     )
     args = parser.parse_args()
     if force_mode == "thinking":
+        if args.cot:
+            parser.error("--cot is not supported by thinking.py")
         args.enable_thinking = True
-        args.cot = False
     elif force_mode == "cot":
+        if args.enable_thinking:
+            parser.error("--enable-thinking is not supported by cot.py")
         args.cot = True
-        args.enable_thinking = False
+    elif force_mode is not None:
+        raise ValueError(f"unknown force_mode: {force_mode}")
     if args.cot and args.enable_thinking:
         parser.error("--cot and --enable-thinking are separate modes; choose one")
     if args.cot and args.cot_max_tokens <= 0:
@@ -223,6 +227,17 @@ def validate_input_paths(args: argparse.Namespace) -> None:
     for path in paths:
         if not path.exists():
             raise FileNotFoundError(path)
+
+
+def validate_run_args(args: argparse.Namespace) -> None:
+    if (
+        not args.cot
+        and args.input_len is not None
+        and args.input_len + args.generated_steps + 1 > args.max_model_len
+    ):
+        raise ValueError("prompt and generated tokens exceed --max-model-len")
+    if args.print_beams <= 0:
+        raise ValueError("--print-beams must be positive")
 
 
 def configure_runner_env(args: argparse.Namespace) -> None:

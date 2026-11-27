@@ -68,7 +68,7 @@ __all__ = [
 
 
 def main(*, quickstart: bool = False) -> None:
-    args = common.parse_args(quickstart=quickstart, description=__doc__)
+    args = parse_args(quickstart=quickstart, description=__doc__)
     common.validate_input_paths(args)
     common.validate_common_args(args)
     common.configure_runner_env(args)
@@ -77,14 +77,7 @@ def main(*, quickstart: bool = False) -> None:
             print("--catalog is ignored in --enable-thinking mode", file=sys.stderr)
         run_thinking(args)
         return
-    if (
-        not args.cot
-        and args.input_len is not None
-        and args.input_len + args.generated_steps + 1 > args.max_model_len
-    ):
-        raise ValueError("prompt and generated tokens exceed --max-model-len")
-    if args.print_beams <= 0:
-        raise ValueError("--print-beams must be positive")
+    common.validate_run_args(args)
 
     if args.catalog is None:
         run(args)

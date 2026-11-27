@@ -133,6 +133,7 @@ def main() -> None:
     args = common.parse_args(description=__doc__, force_mode="cot")
     common.validate_common_args(args)
     common.validate_input_paths(args)
+    common.validate_run_args(args)
     common.configure_runner_env(args)
     try:
         from . import _beam_runner
