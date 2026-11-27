@@ -5,6 +5,16 @@ Run `quickstart.py` with a local OneRec model. The script calls
 to compile a temporary Constraint Table that restricts generation to your
 catalog. The commands below run from the repository root in Bash.
 
+## Scripts
+
+| Script | Use case |
+| --- | --- |
+| [`quickstart.py`](quickstart.md) | First run with a natural-length prompt and optional catalog |
+| [`offline_beam_search.py`](offline_beam_search.md) | Full CLI flag surface, fixed-length prompts, NPU graphs, profiling |
+| [`thinking.py`](thinking.md) | Ordinary LLM thinking generation |
+| [`cot.py`](cot.md) | Thinking before constrained SID Beam Search |
+| [`benchmark.py`](benchmark.md) | Beam Search batch latency without a profiler |
+
 ## Run the V1 example
 
 Install the [CUDA](../../../docs/getting_started/installation/gpu.md) or

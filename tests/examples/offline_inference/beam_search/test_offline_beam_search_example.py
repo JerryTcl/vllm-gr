@@ -273,7 +273,7 @@ def test_npu_graph_example_requires_replay_only_for_decode(
         "vllm_gr.constraints.artifact_builder",
         SimpleNamespace(build_single_trie_artifact=lambda *args: ("artifact", "tokenizer")),
     )
-    monkeypatch.setattr(example, "make_prompt", lambda *args: [11, 12])
+    monkeypatch.setattr(example.common, "make_prompt", lambda *args: [11, 12])
     if fails:
         with pytest.raises(RuntimeError, match="capture/replay was not observed"):
             example.run(args, tmp_path / "unused.safetensors")
